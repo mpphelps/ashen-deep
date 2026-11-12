@@ -265,7 +265,8 @@ export function updateEnemy(g: Game, e: Enemy): void {
         attack(g, e, path, d.windup, {
           kind: 'aim', parryable: false, mult: 0,
           after: () => {
-            g.spawnProjectile(e.x, e.y, tx, ty, 0.6, e.dmg, '•', 0xe8dcc0);
+            const pj = d.proj ?? ['•', 0xe8dcc0];
+            g.spawnProjectile(e.x, e.y, tx, ty, 0.6, e.dmg, pj[0], pj[1]);
             g.sfxAt('arrow', e.x, e.y);
             return false;
           },
@@ -489,6 +490,12 @@ export function updateBoss(g: Game, e: Enemy): void {
       if (e.birthCd <= 0) opts.push(['birth', 4]);
       if (e.phase) opts.push(['rain', 3]);
       break;
+    case 'choir':
+      opts.push(['hymn', 4], ['volley', 4]);
+      if (dist <= 3) opts.push(['cleave', 3]);
+      if (e.birthCd <= 0) opts.push(['summon', 3]);
+      if (e.phase) opts.push(['requiem', 4]);
+      break;
     case 'king':
       if (dist <= 3) opts.push(['sweep', 5]);
       opts.push(['soulfire', 3]);
@@ -577,6 +584,54 @@ export function updateBoss(g: Game, e: Enemy): void {
       bossAttack(g, e, tiles, 22, 0.8, 'acid', { poison: true }, () => {
         for (const t of arenaFilter(g, tiles)) g.addField(t.x, t.y, 'acid', 60);
       });
+      break;
+    }
+
+    // ---------------------------------------------------- choir
+    case 'hymn': {
+      // concentric rings of song with quiet gaps between them; in phase two a second wave fills the gaps
+      const rings = (rs: number[]) => rs.flatMap((r) => ring(e, r, r));
+      if (e.phase) {
+        const w2 = Math.max(6, Math.round(30 * e.wmult));
+        g.addTele({ tiles: arenaFilter(g, rings([3, 5, 7])), t: w2, max: w2, dmg: e.dmg * 0.8, owner: e, parryable: false, kind: 'boss' });
+      }
+      bossAttack(g, e, rings([2, 4, 6]), 18, 0.8, 'boss', {}, () => g.sfx('bell'));
+      g.log(e.phase ? 'The Choir sings in two voices. Find the silence, then find it again.' : 'The Choir draws breath, all seven of them at once. Find the silence between the notes.', 0xc8a0f8);
+      break;
+    }
+    case 'volley':
+      bossAttack(g, e, [], 12, 0, 'boss', {}, () => {
+        const pp = g.player;
+        const base = Math.atan2(pp.y - e.y, pp.x - e.x);
+        const n = e.phase ? 7 : 5;
+        for (let k = 0; k < n; k++) {
+          const a = base + (k - (n - 1) / 2) * 0.22;
+          g.spawnProjectile(e.x + Math.cos(a) * 2, e.y + Math.sin(a) * 2, e.x + Math.cos(a) * 20, e.y + Math.sin(a) * 20, 0.5, e.dmg * 0.6, '♪', 0xd0a0ff);
+        }
+      });
+      break;
+    case 'summon':
+      e.birthCd = 220;
+      bossAttack(g, e, [], 14, 0, 'boss', {}, () => {
+        for (let k = 0; k < 2; k++) {
+          const m = g.spawnEnemyNear('choirling', e.x, e.y, 3, 5);
+          if (m) {
+            m.aware = true;
+            m.state = 'chase';
+            m.cd = 20;
+          }
+        }
+        g.log('Two more voices step out of the dark to join the hymn.', 0xc8a0f8);
+      });
+      break;
+    case 'requiem': {
+      // checkerboard: stand on the quiet squares
+      const r = g.floor.bossRoom!;
+      const tiles: Vec[] = [];
+      const parity = (tx + ty) & 1;
+      for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) if (((x + y) & 1) === parity) tiles.push({ x, y });
+      bossAttack(g, e, tiles, 20, 1, 'boss', {}, () => { g.shake = 4; g.sfx('boom'); });
+      g.log('The floor hums. Every other stone is singing.', 0xc8a0f8);
       break;
     }
 

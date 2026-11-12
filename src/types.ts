@@ -9,7 +9,21 @@ export const T = {
   CRACKED: 5,
   STAIRS: 6,
   FOG: 7,
+  RUBBLE: 8, // cleared with the spade
+  THORNS: 9, // burned with the lantern
+  CHASM: 10, // crossed with the chain hook
+  PHANTOM: 11, // solid only while the bell resonates
+  WATER: 12,
+  BROKEN: 13, // broken bridge
+  TREE: 14,
+  FENCE: 15,
+  ENTRANCE: 16, // dungeon entrance (overworld)
+  UPSTAIRS: 17, // leave dungeon
+  BRIDGE: 18,
 } as const;
+
+export type ToolId = 'spade' | 'lantern' | 'hook' | 'bell';
+export const TOOLS: ToolId[] = ['spade', 'lantern', 'hook', 'bell'];
 
 export const DIRS: Vec[] = [
   { x: 0, y: -1 },
@@ -59,6 +73,8 @@ export interface Room {
   w: number;
   h: number;
   kind: string;
+  theme?: string;
+  visited?: boolean;
 }
 
 export type ObjKind =
@@ -71,7 +87,10 @@ export type ObjKind =
   | 'tablet'
   | 'bonfire'
   | 'message'
-  | 'spikes';
+  | 'spikes'
+  | 'deco'
+  | 'grave'
+  | 'lamp';
 
 export interface Obj {
   id: number;
@@ -87,6 +106,10 @@ export interface Obj {
   puzzle?: number;
   text?: string;
   off?: number;
+  glyph?: string; // deco
+  name?: string; // deco / grave
+  block?: boolean; // deco
+  dug?: boolean; // grave
 }
 
 export interface Puzzle {
@@ -101,15 +124,17 @@ export interface Puzzle {
   order: number[];
   progress: number;
   riddle: string[];
+  tool?: ToolId; // a tool is added to the reward chest
 }
 
 export interface Pickup {
   x: number;
   y: number;
-  kind: 'item' | 'key' | 'tallow' | 'ashes';
+  kind: 'item' | 'key' | 'tallow' | 'ashes' | 'lore' | 'quest' | 'tool';
   item?: Item;
   amount?: number;
   stain?: boolean;
+  id?: string;
 }
 
 export interface Spawn {
@@ -117,16 +142,41 @@ export interface Spawn {
   x: number;
   y: number;
   elite: boolean;
+  tier?: number;
+  name?: string;
+  flag?: string; // set when killed (quest targets)
+  req?: string; // only spawns while this flag test passes ('x' = has flag, '!x' = lacks it)
+}
+
+export interface Region {
+  name: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  tier: number;
+  music: string;
+}
+
+export interface NpcSpot {
+  id: string;
+  x: number;
+  y: number;
 }
 
 export interface Floor {
-  depth: number;
-  act: number;
+  key: string; // 'world' or 'd{n}f{m}'
+  kind: 'world' | 'dungeon';
+  biome: string;
+  depth: number; // difficulty tier
+  dungeon: number; // -1 for world
+  level: number;
   w: number;
   h: number;
   tiles: Uint8Array;
+  ground: Uint8Array; // terrain style per cell (world)
   seen: Uint8Array;
-  decal: Uint8Array; // 1 blood, 2 corpse, 3 bones, 4 scorch
+  decal: Uint8Array; // 1 blood, 2 corpse, 3 bones
   roomAt: Int16Array;
   noBoulder: Uint8Array;
   rooms: Room[];
@@ -136,12 +186,19 @@ export interface Floor {
   puzzles: Puzzle[];
   start: Vec;
   bonfire: Vec;
-  exitRoom: Room;
+  exitRoom: Room | null;
   bossRoom: Room | null;
   bossId: string | null;
   lockedDoor: Vec;
   secretRoom: Room | null;
   name: string;
+  ambient: number; // base light level everywhere in view
+  fovR: number;
+  regions: Region[];
+  entrances: { x: number; y: number; dungeon: number }[];
+  npcs: NpcSpot[];
+  liveEnemies: Enemy[] | null;
+  needsRespawn: boolean;
 }
 
 export type EState = 'idle' | 'chase' | 'windup' | 'recover' | 'stagger';
@@ -179,6 +236,8 @@ export interface Enemy {
   birthCd: number;
   dead: boolean;
   ashes: number;
+  tier: number;
+  flag: string | null;
 }
 
 export interface Tele {
@@ -252,4 +311,8 @@ export interface Player {
   flash: number;
   poison: number;
   burn: number;
+  tools: ToolId[];
+  tool: number; // index into TOOLS of the selected tool
+  salts: number; // embalming salts bought from Pell (+flask healing)
+  lastSafe: Vec;
 }

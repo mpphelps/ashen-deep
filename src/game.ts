@@ -4,24 +4,31 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { RNG, hash2 } from './rng.ts';
 import {
-  T, DIRS, DIRS8, SLOTS,
-  type Vec, type Floor, type Obj, type Player, type Enemy, type Tele, type Projectile, type Field, type Fx, type Slot, type Puzzle,
+  T, DIRS, DIRS8, SLOTS, TOOLS,
+  type Vec, type Floor, type Obj, type Player, type Enemy, type Tele, type Projectile, type Field, type Fx, type Slot,
+  type Puzzle, type ToolId, type Item, type Spawn,
 } from './types.ts';
-import { generateFloor, isBossDepth, MAP_W, MAP_H, actOf } from './dungeon.ts';
-import { ENEMIES, BOSSES, ELITE_MODS, ELITE_MOD_NAMES, eliteName, DEATH_LINES, URN_LINES } from './data.ts';
+import { generateDungeon } from './dungeon.ts';
+import { buildWorld, regionAt, START } from './world.ts';
+import { ENEMIES, BOSSES, ELITE_MODS, THEMES, eliteName, DEATH_LINES, URN_LINES } from './data.ts';
 import {
-  makeItem, makeUnique, rollLoot, computeStats, weaponBase, scaleBonus, salvageValue, setUidFloor,
+  makeItem, makeUnique, rollLoot, rollRarity, computeStats, weaponBase, scaleBonus, salvageValue, setUidFloor,
   RARITY_COLORS, RARITY_NAMES, INV_MAX, UNIQUES, type Stats, type Drop,
 } from './loot.ts';
 import { updateEnemy, updateBoss } from './ai.ts';
 import { computeFov } from './fov.ts';
+import { DUNGEONS, NPCS, LORE, QUESTS, QUEST_ITEMS, TOOL_INFO, TOOL_TILE_NAME, type NpcDef, type Stash } from './story.ts';
 
-export const BLOCKING = new Set(['chest', 'urn', 'brazier', 'boulder', 'tablet', 'bonfire']);
+export const BLOCKING = new Set(['chest', 'urn', 'brazier', 'boulder', 'tablet', 'bonfire', 'grave', 'lamp']);
 const PARRY_TOTAL = 14;
 const PARRY_WINDOW = 6;
+export const HOOK_RANGE = 7;
+const RESONANCE = 260;
 const SAVE_PATH = path.join(os.homedir(), '.ashen-deep-save.json');
 
-export type Mode = 'title' | 'play' | 'inv' | 'bonfire' | 'read' | 'dead' | 'map' | 'help' | 'victory' | 'confirmQuit';
+export type Mode =
+  | 'title' | 'play' | 'inv' | 'bonfire' | 'read' | 'dead' | 'map' | 'help' | 'confirmQuit'
+  | 'dialog' | 'shop' | 'journal' | 'travel' | 'ending';
 
 export interface Msg {
   text: string;
@@ -38,8 +45,25 @@ export interface Banner {
 export interface Modal {
   title: string;
   lines: string[];
-  kind: string;
+  kind: string; // read | soko | confirm
   puzzle?: Puzzle;
+  onYes?: () => void;
+}
+export interface DialogState {
+  npc: NpcDef;
+  lines: string[];
+  page: number;
+  after?: () => void;
+  shop?: string;
+}
+export interface ShopEntry {
+  name: string;
+  desc: string[];
+  price: number;
+  color: number;
+  buy: () => void;
+  soldOut?: boolean;
+  item?: Item;
 }
 
 export function levelCost(level: number): number {
@@ -56,10 +80,19 @@ function newPlayer(): Player {
     ashes: 0, flasks: 3, maxFlasks: 3, keys: 0, inv: [],
     eq: { weapon: null, helm: null, chest: null, ring: null, amulet: null },
     act: null, iframes: 0, moveCd: 0, flash: 0, poison: 0, burn: 0,
+    tools: [], tool: -1, salts: 0, lastSafe: { x: 0, y: 0 },
   };
 }
 
 const sign = (n: number) => (n > 0 ? 1 : n < 0 ? -1 : 0);
+const cap = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
+const BOSS_STORY: Record<string, { lore?: string; quest?: string }> = {
+  warden: { lore: 'warden_book', quest: 'warden_chain' },
+  mother: { lore: 'swaddle' },
+  choir: { lore: 'tongue' },
+  king: {},
+};
+export const WORLD_BONFIRE = { key: 'world', x: 61, y: 58 };
 
 export class Game {
   mode: Mode = 'title';
@@ -68,6 +101,7 @@ export class Game {
   rng: RNG;
   depth = 1;
   floor: Floor = null as unknown as Floor;
+  floors = new Map<string, Floor>();
   player: Player = newPlayer();
   stats: Stats = computeStats(this.player, 0);
   enemies: Enemy[] = [];
@@ -78,11 +112,16 @@ export class Game {
   msgs: Msg[] = [];
   banner: Banner | null = null;
   modal: Modal | null = null;
-  vis: Float32Array = new Float32Array(MAP_W * MAP_H);
-  fovMask: Uint8Array = new Uint8Array(MAP_W * MAP_H);
-  dist: Int32Array = new Int32Array(MAP_W * MAP_H);
+  dialog: DialogState | null = null;
+  shopId = '';
+  shopSel = 0;
+  journalTab = 0;
+  journalSel = 0;
+  travelSel = 0;
+  vis: Float32Array = new Float32Array(1);
+  fovMask: Uint8Array = new Uint8Array(1);
+  dist: Int32Array = new Int32Array(1);
   bossActive = false;
-  bossDefeated = false;
   shake = 0;
   noise = 0;
   target: Enemy | null = null;
@@ -97,8 +136,6 @@ export class Game {
   deaths = 0;
   kills = 0;
   lament = 0;
-  victoryPending = false;
-  victorySeen = false;
   quit = false;
   embers: { x: number; y: number; v: number; c: number }[] = [];
   nextId = 1;
@@ -106,6 +143,20 @@ export class Game {
   lastGlance = 0;
   sounds: string[] = [];
   audioLabel = '';
+  // ---- story state
+  flags = new Set<string>();
+  quests: Record<string, number> = {};
+  questItems: Record<string, number> = {};
+  lore: string[] = [];
+  counters: Record<string, number> = {};
+  floorKeys: Record<string, number> = {};
+  respawnAt = { ...WORLD_BONFIRE };
+  stain: { key: string; x: number; y: number; amount: number } | null = null;
+  resonance = 0;
+  regionName = '';
+  endingStep = 0;
+  endingChoice = '';
+  pendingEnding = false;
 
   constructor(seed: number) {
     this.seed = seed >>> 0;
@@ -123,12 +174,37 @@ export class Game {
     this.deaths = 0;
     this.kills = 0;
     this.lament = 0;
-    this.victorySeen = false;
     this.msgs = [];
-    this.enterFloor(1);
-    this.mode = 'play';
-    this.log('You wake in the cold. Something took your name. Go down, and take it back.', 0xd0a060);
-    this.log('Press ? for controls. Rest at the bonfire (☼) to level up.', 0x8a8478);
+    this.flags = new Set();
+    this.quests = {};
+    this.questItems = {};
+    this.lore = [];
+    this.counters = {};
+    this.floorKeys = {};
+    this.floors.clear();
+    this.floor = null as unknown as Floor;
+    this.stain = null;
+    this.pendingEnding = false;
+    this.respawnAt = { ...WORLD_BONFIRE };
+    this.setFlag('fire:world:61,57');
+    this.enterLocation('world', START);
+    this.modal = {
+      title: 'THE TITHE PIT',
+      kind: 'read',
+      lines: [
+        'You wake at the bottom of the Pit with dirt in your mouth.',
+        'You climb. It takes a long time. Your hands know how to climb out of a hole;',
+        'they have done it before.',
+        '',
+        'At the top, the sky is the color of a bruise. It has not been day for a long time.',
+        'South, behind a wall, there are lights. People.',
+        '',
+        'They will not be glad to see you.',
+      ],
+    };
+    this.mode = 'read';
+    this.log('You crawl out of the Pit. The town of Hollowmere lies south.', 0xd0a060);
+    this.log('Press ? for controls. B opens your journal.', 0x8a8478);
   }
 
   recalc(): void {
@@ -137,55 +213,244 @@ export class Game {
     if (this.player.sta > this.stats.maxSta) this.player.sta = this.stats.maxSta;
   }
 
-  enterFloor(depth: number): void {
-    this.depth = depth;
-    this.floor = generateFloor(depth, hash2(this.seed, depth * 1013));
-    const f = this.floor;
+  // ================================================================ story state API (used by story.ts)
+  flag(f: string): boolean {
+    if (f.startsWith('!')) return !this.flag(f.slice(1));
+    if (f.startsWith('tool:')) return this.player.tools.includes(f.slice(5) as ToolId);
+    return this.flags.has(f);
+  }
+  setFlag(f: string): void {
+    this.flags.add(f);
+    if (f === 'bridge') {
+      // the bridge is mended in the live world too, not just on reload
+      const w = this.floors.get('world');
+      if (w) for (let i = 0; i < w.tiles.length; i++) if (w.tiles[i] === T.BROKEN) w.tiles[i] = T.BRIDGE;
+    }
+  }
+  quest(id: string): number {
+    return this.quests[id] ?? 0;
+  }
+  setQuest(id: string, stage: number): void {
+    const old = this.quest(id);
+    if (stage <= old) return;
+    this.quests[id] = stage;
+    const q = QUESTS[id];
+    const done = stage >= q.stages.length - 1;
+    if (old === 0 && !done) this.log(`New quest: ${q.title}`, 0xffd060);
+    else if (done) this.log(`Quest complete: ${q.title}`, 0xffd060);
+    else this.log(`Quest updated: ${q.title}`, 0xffd060);
+    this.sfx('page');
+  }
+  bossDead(id: string): boolean {
+    return this.flags.has(`boss:${id}`);
+  }
+  hasQuestItem(id: string, n = 1): boolean {
+    return (this.questItems[id] ?? 0) >= n;
+  }
+  questItemCount(id: string): number {
+    return this.questItems[id] ?? 0;
+  }
+  takeQuestItem(id: string, n = 1): void {
+    this.questItems[id] = Math.max(0, (this.questItems[id] ?? 0) - n);
+  }
+  giveQuestItem(id: string): void {
+    this.questItems[id] = (this.questItems[id] ?? 0) + 1;
+    this.log(`Obtained: ${QUEST_ITEMS[id]}`, 0xffe0a0);
+    this.sfx('key');
+  }
+  giveLore(id: string): void {
+    if (this.lore.includes(id)) return;
+    this.lore.push(id);
+    this.setFlag(`lore:${id}`);
+    this.log(`Journal: "${LORE[id].title}"  (B to read)`, 0xe0c8a0);
+    this.sfx('page');
+  }
+  giveUnique(id: string): void {
+    const it = makeUnique(this.rng, id, Math.max(2, this.progressTier()));
+    if (this.player.inv.length < INV_MAX) this.player.inv.push(it);
+    else this.floor.pickups.push({ x: this.player.x, y: this.player.y, kind: 'item', item: it });
+    this.log(`Received: ${it.name}`, RARITY_COLORS[3]);
+  }
+  giveTool(t: ToolId): void {
     const p = this.player;
-    p.x = f.start.x;
-    p.y = f.start.y;
+    if (p.tools.includes(t)) return;
+    p.tools.push(t);
+    p.tool = TOOLS.indexOf(t);
+    const info = TOOL_INFO[t];
+    this.banner = { text: spaced(info.name), sub: 'a new tool', color: info.color, t: 60, max: 60 };
+    this.sfx('legendary');
+    this.recalc();
+    this.modal = { title: info.name.toUpperCase(), kind: 'read', lines: [info.found, '', info.desc, '', `Select it with [${TOOLS.indexOf(t) + 1}], use it with [R].`] };
+    this.mode = 'read';
+  }
+  progressTier(): number {
+    return 1 + ['warden', 'mother', 'choir', 'king'].filter((b) => this.bossDead(b)).length * 2;
+  }
+  tierHere(): number {
+    if (this.floor.kind === 'world') return regionAt(this.floor, this.player.x, this.player.y)?.tier || 1;
+    return this.floor.depth;
+  }
+
+  // ================================================================ locations
+  getFloor(key: string): Floor {
+    const cached = this.floors.get(key);
+    if (cached) return cached;
+    let f: Floor;
+    if (key === 'world') f = buildWorld(this.seed, { flag: (x) => this.flag(x) });
+    else {
+      const m = /^d(\d)f(\d)$/.exec(key)!;
+      const d = +m[1], lv = +m[2];
+      const def = DUNGEONS[d];
+      f = generateDungeon(
+        {
+          key, dungeon: d, level: lv, name: def.name, biome: def.biome, tier: def.tiers[lv], plan: def.floors[lv],
+          bossId: def.floors[lv].boss ? def.boss : null,
+          hasTool: (t) => this.player.tools.includes(t),
+          wantStash: (s: Stash) =>
+            s.kind === 'lore' ? !this.lore.includes(s.id) : !this.hasQuestItem(s.id) && !(s.quest && this.quest(s.quest) >= QUESTS[s.quest].stages.length - 1),
+        },
+        hash2(this.seed, 100 + d * 10 + lv),
+      );
+      if (f.bossId && this.bossDead(f.bossId)) this.openArena(f);
+    }
+    this.applyPersistence(f);
+    this.floors.set(key, f);
+    return f;
+  }
+
+  /** Re-apply everything the player has permanently changed on this floor. */
+  applyPersistence(f: Floor): void {
+    const k = f.key;
+    for (let y = 0; y < f.h; y++)
+      for (let x = 0; x < f.w; x++) {
+        if (!this.flags.has(`clr:${k}:${x},${y}`)) continue;
+        const i = y * f.w + x;
+        f.tiles[i] = f.tiles[i] === T.LOCKED ? T.OPEN : T.FLOOR;
+      }
+    for (const o of f.objects) {
+      if (o.kind === 'chest' && this.flags.has(`chest:${k}:${o.x},${o.y}`)) o.open = true;
+      if (o.kind === 'grave' && this.flags.has(`grave:${k}:${o.x},${o.y}`)) o.dug = true;
+    }
+    for (const pz of f.puzzles) {
+      if (!this.flags.has(`pz:${k}:${pz.id}`)) continue;
+      pz.solved = true;
+      if (pz.kind === 'sokoban') {
+        f.objects.filter((o) => o.kind === 'boulder' && o.puzzle === pz.id).forEach((b, i) => {
+          b.x = pz.plates[i].x;
+          b.y = pz.plates[i].y;
+        });
+      }
+      for (const o of f.objects) if (o.puzzle === pz.id && (o.kind === 'rune' || o.kind === 'brazier')) o.lit = true;
+      const c = this.rewardSpot(f, pz);
+      if (c) f.objects.push({ id: 9000 + pz.id, kind: 'chest', x: c.x, y: c.y, loot: 'treasure', open: this.flags.has(`chest:${k}:${c.x},${c.y}`) });
+    }
+    f.pickups = f.pickups.filter((pk) => !(pk.kind === 'lore' && this.lore.includes(pk.id!)));
+    if (this.stain && this.stain.key === k && !f.pickups.some((p) => p.stain))
+      f.pickups.push({ x: this.stain.x, y: this.stain.y, kind: 'ashes', amount: this.stain.amount, stain: true });
+  }
+
+  openArena(f: Floor): void {
+    const r = f.bossRoom!;
+    f.tiles[f.lockedDoor.y * f.w + f.lockedDoor.x] = T.OPEN;
+    f.tiles[(r.y + (r.h >> 1)) * f.w + r.x + (r.w >> 1)] = T.UPSTAIRS;
+  }
+
+  enterLocation(key: string, at?: Vec): void {
+    if (this.floor) {
+      this.floor.liveEnemies = this.enemies.filter((e) => !e.dead && !e.boss);
+      this.floorKeys[this.floor.key] = this.player.keys;
+      const fd = this.floor.lockedDoor;
+      if (this.inBounds(fd.x, fd.y) && this.tileAt(fd.x, fd.y) === T.FOG) this.floor.tiles[this.idx(fd.x, fd.y)] = T.OPEN;
+    }
+    const f = this.getFloor(key);
+    this.floor = f;
+    const N = f.w * f.h;
+    this.vis = new Float32Array(N);
+    this.fovMask = new Uint8Array(N);
+    this.dist = new Int32Array(N);
+    const p = this.player;
+    const pos = at ?? f.start;
+    p.x = pos.x;
+    p.y = pos.y;
+    p.lastSafe = { ...pos };
     p.act = null;
-    p.keys = 0;
+    p.keys = this.floorKeys[key] ?? 0;
+    this.depth = f.depth;
     this.teles = [];
     this.projs = [];
     this.fields = [];
     this.fx = [];
     this.bossActive = false;
-    this.bossDefeated = false;
     this.target = null;
-    this.spawnEnemies();
+    this.resonance = 0;
+    if (f.needsRespawn || !f.liveEnemies) this.spawnEnemies();
+    else {
+      this.enemies = f.liveEnemies;
+      this.addBossIfAlive();
+    }
+    f.needsRespawn = false;
     this.updateFov();
-    const boss = isBossDepth(depth);
-    this.banner = {
-      text: spaced(f.name),
-      sub: `Depth ${depth}${boss ? '  ·  something vast breathes below' : ''}`,
-      color: [0xd8c8a8, 0x9ad0a8, 0xc8a0f0][f.act],
-      t: 70,
-      max: 70,
-    };
+    if (f.kind === 'dungeon') {
+      const def = DUNGEONS[f.dungeon];
+      this.banner = { text: spaced(def.name), sub: `${['First', 'Second', 'Third'][f.level] ?? ''} descent${f.bossId && !this.bossDead(f.bossId) ? '  ·  something vast is waiting' : ''}`, color: 0xd8c8a8, t: 70, max: 70 };
+      this.regionName = def.name;
+    } else {
+      this.regionName = '';
+      this.checkRegion();
+    }
     this.save();
+  }
+
+  checkRegion(): void {
+    if (this.floor.kind !== 'world') return;
+    const r = regionAt(this.floor, this.player.x, this.player.y);
+    const name = r?.name ?? 'The Pale';
+    if (name !== this.regionName) {
+      const first = !this.flags.has(`region:${name}`);
+      this.regionName = name;
+      if (first || name === 'Hollowmere') this.banner = { text: spaced(name), sub: '', color: name === 'Hollowmere' ? 0xffc070 : 0xc8c0a8, t: 50, max: 50 };
+      this.setFlag(`region:${name}`);
+    }
   }
 
   spawnEnemies(): void {
     const f = this.floor;
     this.enemies = [];
-    for (const s of f.spawns) this.enemies.push(this.makeEnemy(s.def, s.x, s.y, s.elite));
-    if (f.bossId && f.bossRoom && !this.bossDefeated) {
+    for (const s of f.spawns) {
+      if (s.req && !this.flag(s.req)) continue;
+      this.enemies.push(this.makeEnemyFromSpawn(s));
+    }
+    this.addBossIfAlive();
+  }
+
+  addBossIfAlive(): void {
+    const f = this.floor;
+    if (f.bossId && f.bossRoom && !this.bossDead(f.bossId) && !this.enemies.some((e) => e.boss)) {
       const r = f.bossRoom;
       this.enemies.push(this.makeBoss(f.bossId, r.x + (r.w >> 1), r.y + (r.h >> 1)));
     }
   }
 
-  makeEnemy(defId: string, x: number, y: number, elite: boolean): Enemy {
+  makeEnemyFromSpawn(s: Spawn): Enemy {
+    const e = this.makeEnemy(s.def, s.x, s.y, s.elite, s.tier ?? this.floor.depth);
+    if (s.name) {
+      e.name = s.name;
+      e.elite = e.elite ?? { mods: [] };
+    }
+    if (s.flag) e.flag = s.flag;
+    return e;
+  }
+
+  makeEnemy(defId: string, x: number, y: number, elite: boolean, tier = this.depth): Enemy {
     const d = ENEMIES[defId];
-    const sc = 1 + 0.32 * (this.depth - 1);
-    const dsc = 1 + 0.2 * (this.depth - 1);
+    const sc = 1 + 0.3 * (tier - 1);
+    const dsc = 1 + 0.18 * (tier - 1);
     const e: Enemy = {
       id: this.nextId++, def: defId, boss: null, name: d.name, x, y, size: 1,
       hp: Math.round(d.hp * sc), maxHp: Math.round(d.hp * sc), dmg: d.dmg * dsc, poise: d.poise, maxPoise: d.poise,
       speed: d.speed, state: 'idle', t: 0, cd: 0, moveT: this.rng.int(0, d.speed), face: { ...this.rng.pick(DIRS) },
       aware: false, lostT: 0, flash: 0, alertT: 0, burn: 0, bleed: 0, elite: null, combo: 0, phase: 0, riposte: 0,
-      wmult: 1, birthCd: 0, dead: false, ashes: Math.round(d.ashes * (1 + 0.18 * (this.depth - 1))),
+      wmult: 1, birthCd: 0, dead: false, ashes: Math.round(d.ashes * (1 + 0.18 * (tier - 1))), tier, flag: null,
     };
     if (elite) {
       const mods = this.rng.shuffle(ELITE_MODS.slice()).slice(0, this.rng.int(1, 2));
@@ -208,25 +473,28 @@ export class Game {
 
   makeBoss(id: string, x: number, y: number): Enemy {
     const b = BOSSES[id];
-    const cycle = Math.floor((this.depth - 1) / 9);
-    const hpS = 1 + 0.7 * cycle, dS = 1 + 0.35 * cycle;
     return {
       id: this.nextId++, def: 'hollow', boss: id, name: b.name, x, y, size: 3,
-      hp: Math.round(b.hp * hpS), maxHp: Math.round(b.hp * hpS), dmg: b.dmg * dS, poise: b.poise, maxPoise: b.poise,
+      hp: b.hp, maxHp: b.hp, dmg: b.dmg, poise: b.poise, maxPoise: b.poise,
       speed: b.speed, state: 'idle', t: 0, cd: 20, moveT: 0, face: { x: 0, y: 1 }, aware: true, lostT: 0, flash: 0,
       alertT: 0, burn: 0, bleed: 0, elite: null, combo: 0, phase: 0, riposte: 0, wmult: 1, birthCd: 60, dead: false,
-      ashes: Math.round(b.ashes * (1 + cycle)),
+      ashes: b.ashes, tier: this.floor.depth, flag: null,
     };
   }
 
   // ================================================================ save / load
   save(): void {
-    if (!this.saveEnabled) return;
+    if (!this.saveEnabled || this.mode === 'title' || !this.floor) return;
     try {
+      this.floorKeys[this.floor.key] = this.player.keys;
       const p = { ...this.player, act: null };
       fs.writeFileSync(
         SAVE_PATH,
-        JSON.stringify({ v: 1, seed: this.seed, depth: this.depth, player: p, deaths: this.deaths, kills: this.kills, victorySeen: this.victorySeen }),
+        JSON.stringify({
+          v: 2, seed: this.seed, player: p, deaths: this.deaths, kills: this.kills, flags: [...this.flags], quests: this.quests,
+          questItems: this.questItems, lore: this.lore, counters: this.counters, floorKeys: this.floorKeys,
+          respawn: this.respawnAt, stain: this.stain,
+        }),
       );
     } catch {
       /* ignore */
@@ -235,7 +503,8 @@ export class Game {
 
   static hasSave(): boolean {
     try {
-      return fs.existsSync(SAVE_PATH);
+      if (!fs.existsSync(SAVE_PATH)) return false;
+      return JSON.parse(fs.readFileSync(SAVE_PATH, 'utf8')).v === 2;
     } catch {
       return false;
     }
@@ -244,22 +513,33 @@ export class Game {
   load(): boolean {
     try {
       const d = JSON.parse(fs.readFileSync(SAVE_PATH, 'utf8'));
+      if (d.v !== 2) return false;
       this.seed = d.seed >>> 0;
-      this.rng = new RNG(hash2(this.seed, 0xabc + d.depth));
+      this.rng = new RNG(hash2(this.seed, 0xabc + (d.kills ?? 0)));
       this.player = { ...newPlayer(), ...d.player, act: null };
       let maxUid = 0;
       for (const it of [...this.player.inv, ...SLOTS.map((s) => this.player.eq[s])]) if (it) maxUid = Math.max(maxUid, it.uid);
       setUidFloor(maxUid);
       this.deaths = d.deaths ?? 0;
       this.kills = d.kills ?? 0;
-      this.victorySeen = !!d.victorySeen;
+      this.flags = new Set(d.flags ?? []);
+      this.quests = d.quests ?? {};
+      this.questItems = d.questItems ?? {};
+      this.lore = d.lore ?? [];
+      this.counters = d.counters ?? {};
+      this.floorKeys = d.floorKeys ?? {};
+      this.respawnAt = d.respawn ?? { ...WORLD_BONFIRE };
+      this.stain = d.stain ?? null;
       this.lament = 0;
+      this.pendingEnding = false;
       this.msgs = [];
+      this.floors.clear();
+      this.floor = null as unknown as Floor;
       this.recalc();
       this.player.hp = this.stats.maxHp;
       this.player.flasks = this.player.maxFlasks;
-      this.enterFloor(d.depth);
       this.mode = 'play';
+      this.enterLocation(this.respawnAt.key, { x: this.respawnAt.x, y: this.respawnAt.y });
       this.log('You rise from the ashes of your last rest.', 0xd0a060);
       return true;
     } catch {
@@ -267,27 +547,26 @@ export class Game {
     }
   }
 
-  // ================================================================ audio
+  // ================================================================ messaging / audio
   sfx(id: string): void {
     if (this.sounds.length < 24) this.sounds.push(id);
   }
-  /** Only audible if the source is something the player can see. */
   sfxAt(id: string, x: number, y: number): void {
     if (this.inBounds(x, y) && this.vis[this.idx(x, y)] > 0) this.sfx(id);
   }
   musicTrack(): string | null {
     if (this.mode === 'title' || (this.mode === 'help' && this.helpReturn === 'title')) return 'title';
     if (this.mode === 'dead') return null;
-    if (this.mode === 'victory') return 'title';
+    if (this.mode === 'ending') return 'title';
     if (!this.floor) return 'title';
     if (this.bossActive) return 'boss';
-    return ['act1', 'act2', 'act3'][this.floor.act];
+    if (this.floor.kind === 'dungeon') return DUNGEONS[this.floor.dungeon].music;
+    return regionAt(this.floor, this.player.x, this.player.y)?.music ?? 'wilds';
   }
 
-  // ================================================================ messaging
   log(text: string, color = 0xc8c0b0): void {
     this.msgs.push({ text, color, t: this.tick });
-    if (this.msgs.length > 60) this.msgs.shift();
+    if (this.msgs.length > 80) this.msgs.shift();
   }
 
   addFx(x: number, y: number, ch: string, color: number, t = 4): void {
@@ -298,36 +577,57 @@ export class Game {
   input(key: string, raw: string): void {
     switch (this.mode) {
       case 'title': return this.titleInput(key);
-      case 'play':
+      case 'play': {
         if (key === 'inv') { this.mode = 'inv'; this.invSel = 0; return; }
         if (key === 'map') { this.mode = 'map'; return; }
         if (key === 'help') { this.mode = 'help'; this.helpReturn = 'play'; return; }
+        if (key === 'journal') { this.mode = 'journal'; this.journalSel = 0; return; }
         if (key === 'esc') { this.mode = 'confirmQuit'; return; }
-        if (['up', 'down', 'left', 'right', 'attack', 'heavy', 'roll', 'parry', 'flask', 'interact'].includes(key))
+        if (raw >= '1' && raw <= '4') {
+          const t = TOOLS[+raw - 1];
+          if (this.player.tools.includes(t)) {
+            this.player.tool = +raw - 1;
+            this.log(`${TOOL_INFO[t].name} in hand.`, TOOL_INFO[t].color);
+            this.sfx('menu');
+          }
+          return;
+        }
+        if (['up', 'down', 'left', 'right', 'attack', 'heavy', 'roll', 'parry', 'flask', 'interact', 'tool'].includes(key))
           this.buf = { k: key, t: this.tick };
         return;
+      }
       case 'inv': return this.invInput(key, raw);
       case 'bonfire': return this.bonfireInput(key);
-      case 'read':
-        if (this.modal?.kind === 'stairs') {
+      case 'travel': return this.travelInput(key);
+      case 'dialog': return this.dialogInput(key);
+      case 'shop': return this.shopInput(key);
+      case 'journal': return this.journalInput(key);
+      case 'ending': return this.endingInput(key, raw);
+      case 'read': {
+        const m = this.modal;
+        if (m?.kind === 'confirm') {
           if (key === 'enter' || key === 'interact' || raw === 'y') {
             this.modal = null;
             this.mode = 'play';
-            this.descend();
+            m.onYes?.();
           } else if (key === 'esc' || raw === 'n') {
             this.modal = null;
             this.mode = 'play';
           }
           return;
         }
-        if (raw === 'r' && this.modal?.kind === 'soko' && this.modal.puzzle) {
-          this.resetSokoban(this.modal.puzzle);
+        if (raw === 'r' && m?.kind === 'soko' && m.puzzle) {
+          this.resetSokoban(m.puzzle);
           this.modal = null;
           this.mode = 'play';
           return;
         }
-        if (['esc', 'enter', 'interact', 'roll', 'attack'].includes(key)) { this.modal = null; this.mode = 'play'; }
+        if (['esc', 'enter', 'interact', 'roll', 'attack'].includes(key)) {
+          this.modal = null;
+          this.mode = 'play';
+        }
         return;
+      }
       case 'map':
         this.mode = 'play';
         return;
@@ -336,9 +636,6 @@ export class Game {
         return;
       case 'dead':
         if (this.deadT > 45) this.respawn();
-        return;
-      case 'victory':
-        if (key === 'enter' || key === 'interact' || key === 'esc') this.mode = 'play';
         return;
       case 'confirmQuit':
         if (raw === 'y') { this.save(); this.mode = 'title'; this.titleSel = 0; }
@@ -415,13 +712,19 @@ export class Game {
     if (this.invSel >= n) this.invSel = n - 1;
   }
 
+  bonfireOptions(): string[] {
+    return ['Vigor', 'Endurance', 'Strength', 'Dexterity', 'Travel', 'Leave'];
+  }
+
   bonfireInput(key: string): void {
     const p = this.player;
+    const n = this.bonfireOptions().length;
     if (key === 'esc') { this.mode = 'play'; return; }
-    if (key === 'up') { this.bonSel = (this.bonSel + 4) % 5; this.sfx('menu'); }
-    else if (key === 'down') { this.bonSel = (this.bonSel + 1) % 5; this.sfx('menu'); }
+    if (key === 'up') { this.bonSel = (this.bonSel + n - 1) % n; this.sfx('menu'); }
+    else if (key === 'down') { this.bonSel = (this.bonSel + 1) % n; this.sfx('menu'); }
     else if (key === 'enter' || key === 'interact') {
-      if (this.bonSel === 4) { this.mode = 'play'; return; }
+      if (this.bonSel === 5) { this.mode = 'play'; return; }
+      if (this.bonSel === 4) { this.mode = 'travel'; this.travelSel = 0; return; }
       const cost = levelCost(p.level);
       if (p.ashes < cost) { this.log('You lack the ashes. The flame is unimpressed.', 0x8a8478); this.sfx('locked'); return; }
       p.ashes -= cost;
@@ -437,11 +740,202 @@ export class Game {
     }
   }
 
+  /** Every bonfire the player has rested at. */
+  travelTargets(): { key: string; x: number; y: number; name: string }[] {
+    const out: { key: string; x: number; y: number; name: string }[] = [];
+    for (const f of this.flags) {
+      const m = /^fire:([^:]+):(\d+),(\d+)$/.exec(f);
+      if (!m) continue;
+      const key = m[1], x = +m[2], y = +m[3];
+      let name: string;
+      if (key === 'world') name = regionAt(this.getFloor('world'), x, y)?.name ?? 'The Pale';
+      else {
+        const d = /^d(\d)f(\d)$/.exec(key)!;
+        name = `${DUNGEONS[+d[1]].name}, ${['first', 'second'][+d[2]]} descent`;
+      }
+      out.push({ key, x, y, name });
+    }
+    return out.sort((a, b) => a.name.localeCompare(b.name));
+  }
+
+  travelInput(key: string): void {
+    const t = this.travelTargets();
+    if (key === 'esc') { this.mode = 'bonfire'; return; }
+    if (!t.length) return;
+    if (key === 'up') { this.travelSel = (this.travelSel + t.length - 1) % t.length; this.sfx('menu'); }
+    else if (key === 'down') { this.travelSel = (this.travelSel + 1) % t.length; this.sfx('menu'); }
+    else if (key === 'enter' || key === 'interact') {
+      const dst = t[this.travelSel];
+      this.sfx('descend');
+      this.mode = 'play';
+      this.respawnAt = { key: dst.key, x: dst.x, y: dst.y + 1 };
+      this.enterLocation(dst.key, { x: dst.x, y: dst.y + 1 });
+      this.log('The flames fold you up and set you down somewhere else.', 0xffa040);
+    }
+  }
+
+  // ---- dialog
+  talkTo(npc: NpcDef): void {
+    const d = npc.talk(this);
+    this.dialog = { npc, lines: d.lines, page: 0, after: d.after, shop: d.shop };
+    this.mode = 'dialog';
+    this.buf = null;
+    this.sfx('talk');
+  }
+
+  dialogInput(key: string): void {
+    const d = this.dialog;
+    if (!d) { this.mode = 'play'; return; }
+    const close = () => {
+      this.dialog = null;
+      this.mode = 'play';
+      d.after?.();
+      if (d.shop && this.mode === 'play') this.openShop(d.shop);
+      this.save();
+    };
+    if (key === 'esc') return close();
+    if (['enter', 'interact', 'attack', 'roll', 'down', 'right'].includes(key)) {
+      if (d.page < d.lines.length - 1) {
+        d.page++;
+        this.sfx('talk');
+      } else close();
+    }
+  }
+
+  // ---- shops
+  openShop(id: string): void {
+    this.shopId = id;
+    this.shopSel = 0;
+    this.mode = 'shop';
+  }
+
+  shopEntries(): ShopEntry[] {
+    const p = this.player;
+    if (this.shopId === 'pell') {
+      const tallow = this.counters.pell_tallow ?? 0;
+      return [
+        {
+          name: 'Rendered Tallow', color: 0xfff0b0, price: [500, 900, 1400][tallow] ?? 0, soldOut: tallow >= 3,
+          desc: ['+1 flask charge, permanently.', '"Rendered from the finest. Don\'t ask the finest what."'],
+          buy: () => {
+            this.counters.pell_tallow = tallow + 1;
+            p.maxFlasks++;
+            p.flasks++;
+          },
+        },
+        {
+          name: 'Embalming Salts', color: 0xd0e0f0, price: [350, 700, 1100][p.salts] ?? 0, soldOut: p.salts >= 3,
+          desc: ['Your flasks heal 12% more, permanently.', '"Same salts I used on you. Kept you lovely."'],
+          buy: () => {
+            p.salts++;
+            this.recalc();
+          },
+        },
+      ];
+    }
+    // Coyle: gear restocks whenever something big dies
+    const b = ['warden', 'mother', 'choir', 'king'].filter((x) => this.bossDead(x)).length;
+    const rng = new RNG(hash2(this.seed, 0xc0 + b));
+    const disc = this.quest('ring') >= 2 ? 0.7 : 1;
+    const out: ShopEntry[] = [];
+    for (let i = 0; i < 6; i++) {
+      const ilvl = 2 + b * 2;
+      const r = i < 1 ? 0 : i < 4 ? 1 : 2;
+      const it = makeItem(rng, ilvl, i === 5 && rollRarity(rng, ilvl, 50) >= 2 ? 2 : r);
+      const sold = this.flags.has(`sold:${b}:${i}`);
+      out.push({
+        name: it.name, color: RARITY_COLORS[it.rarity], price: Math.round([60, 220, 650, 2400][it.rarity] * (1 + ilvl * 0.2) * disc),
+        soldOut: sold, desc: [], item: it,
+        buy: () => {
+          this.setFlag(`sold:${b}:${i}`);
+          const copy = { ...it, uid: makeItem(this.rng, 1, 0).uid };
+          if (p.inv.length < INV_MAX) p.inv.push(copy);
+          else this.floor.pickups.push({ x: p.x, y: p.y, kind: 'item', item: copy });
+        },
+      });
+    }
+    return out;
+  }
+
+  shopInput(key: string): void {
+    const e = this.shopEntries();
+    if (key === 'esc' || key === 'inv') { this.mode = 'play'; return; }
+    if (key === 'up') { this.shopSel = (this.shopSel + e.length - 1) % e.length; this.sfx('menu'); }
+    else if (key === 'down') { this.shopSel = (this.shopSel + 1) % e.length; this.sfx('menu'); }
+    else if (key === 'enter' || key === 'interact') {
+      const s = e[this.shopSel];
+      if (!s || s.soldOut) { this.sfx('locked'); return; }
+      if (this.player.ashes < s.price) {
+        this.log('Not enough ashes.', 0x8a8478);
+        this.sfx('locked');
+        return;
+      }
+      this.player.ashes -= s.price;
+      s.buy();
+      this.log(`Bought: ${s.name}`, s.color);
+      this.sfx('buy');
+      this.save();
+    }
+  }
+
+  // ---- journal
+  journalEntries(): { title: string; text: string; color: number }[] {
+    if (this.journalTab === 0) {
+      const out: { title: string; text: string; color: number }[] = [];
+      for (const [id, q] of Object.entries(QUESTS)) {
+        const st = this.quest(id);
+        if (st === 0 && id !== 'main') continue;
+        const done = st >= q.stages.length - 1;
+        let text = q.stages[st] ?? '';
+        if (id === 'hearts' && st === 1) text = `Bring Pell five Hollow Hearts, cut from Hollows, Ghouls and Flagellants. (${this.questItemCount('hollow_heart')}/5)`;
+        out.push({ title: `${done ? '✓ ' : ''}${q.title}`, text: `${q.giver}.  ${text}`, color: done ? 0x6a6458 : 0xffd060 });
+      }
+      return out;
+    }
+    if (this.journalTab === 1) return this.lore.map((id) => ({ title: LORE[id].title, text: LORE[id].text, color: 0xe0c8a0 }));
+    const tools = this.player.tools.map((t) => ({ title: TOOL_INFO[t].name, text: `${TOOL_INFO[t].found}  ${TOOL_INFO[t].desc}`, color: TOOL_INFO[t].color }));
+    const items = Object.entries(this.questItems).filter(([, n]) => n > 0).map(([id, n]) => ({ title: `${QUEST_ITEMS[id]}${n > 1 ? ` x${n}` : ''}`, text: 'Someone in Hollowmere wants this.', color: 0xffe0a0 }));
+    return [...tools, ...items];
+  }
+
+  journalInput(key: string): void {
+    if (key === 'esc' || key === 'journal') { this.mode = 'play'; return; }
+    if (key === 'left') { this.journalTab = (this.journalTab + 2) % 3; this.journalSel = 0; this.sfx('menu'); }
+    else if (key === 'right') { this.journalTab = (this.journalTab + 1) % 3; this.journalSel = 0; this.sfx('menu'); }
+    const n = this.journalEntries().length;
+    if (!n) return;
+    if (key === 'up') this.journalSel = (this.journalSel + n - 1) % n;
+    else if (key === 'down') this.journalSel = (this.journalSel + 1) % n;
+  }
+
+  // ---- ending
+  endingInput(key: string, raw: string): void {
+    if (this.endingStep === 0) {
+      if (raw === '1') this.endingChoice = 'crown';
+      else if (raw === '2') this.endingChoice = 'bury';
+      else return;
+      this.endingStep = 1;
+      this.sfx(this.endingChoice === 'crown' ? 'bossintro' : 'rest');
+      this.setFlag(`ending:${this.endingChoice}`);
+      this.save();
+      return;
+    }
+    if (['enter', 'interact', 'esc'].includes(key)) {
+      if (this.endingStep === 1) {
+        this.endingStep = 2;
+        return;
+      }
+      this.pendingEnding = false;
+      this.mode = 'title';
+      this.titleSel = 0;
+    }
+  }
+
   // ================================================================ main tick
   update(): void {
     this.tick++;
     if (this.banner && --this.banner.t <= 0) this.banner = null;
-    if (this.mode === 'title') {
+    if (this.mode === 'title' || this.mode === 'ending') {
       this.updateEmbers();
       return;
     }
@@ -474,13 +968,18 @@ export class Game {
     if (this.shake > 0) this.shake--;
     if (this.noise > 0) this.noise--;
     if (this.targetT > 0 && --this.targetT <= 0) this.target = null;
+    if (this.resonance > 0) {
+      this.resonance--;
+      if (this.resonance === 50) this.log("The bell's silence is fading...", 0xb0a8d0);
+      if (this.resonance === 0) this.endResonance();
+      if (this.mode !== 'play') return;
+    }
 
     this.updatePlayerAction();
     if (this.mode !== 'play') return;
     this.processBuffered();
     if (this.mode !== 'play') return;
 
-    // stamina
     if (p.staDelay > 0) p.staDelay--;
     else if (!p.act || p.act.kind === 'recover' || p.act.kind === 'drink' || p.act.kind === 'parry') {
       const mult = p.act?.kind === 'drink' || p.act?.kind === 'parry' ? 0.5 : 1;
@@ -491,6 +990,8 @@ export class Game {
     const list = this.enemies.slice();
     for (const e of list) {
       if (e.dead) continue;
+      // the overworld is big: far-off enemies sleep
+      if (this.floor.kind === 'world' && !e.aware && Math.max(Math.abs(e.x - p.x), Math.abs(e.y - p.y)) > 34) continue;
       if (e.boss) updateBoss(this, e);
       else updateEnemy(this, e);
       if (this.mode !== 'play') return;
@@ -506,11 +1007,9 @@ export class Game {
     for (const fx of this.fx) fx.t--;
     this.fx = this.fx.filter((f) => f.t > 0);
     this.updateFov();
-    if (this.victoryPending && !this.banner) {
-      this.victoryPending = false;
-      this.victorySeen = true;
-      this.mode = 'victory';
-      this.save();
+    if (this.pendingEnding && !this.banner) {
+      this.mode = 'ending';
+      this.endingStep = 0;
     }
   }
 
@@ -538,31 +1037,43 @@ export class Game {
       case 'parry': this.startParry(); break;
       case 'flask': this.drink(); break;
       case 'interact': this.interact(); break;
+      case 'tool': this.useTool(); break;
     }
   }
 
   // ================================================================ queries
   idx(x: number, y: number): number {
-    return y * MAP_W + x;
+    return y * this.floor.w + x;
   }
   inBounds(x: number, y: number): boolean {
-    return x >= 0 && y >= 0 && x < MAP_W && y < MAP_H;
+    return x >= 0 && y >= 0 && x < this.floor.w && y < this.floor.h;
   }
   tileAt(x: number, y: number): number {
-    return this.inBounds(x, y) ? this.floor.tiles[y * MAP_W + x] : T.WALL;
+    return this.inBounds(x, y) ? this.floor.tiles[y * this.floor.w + x] : T.WALL;
   }
   isOpaque(x: number, y: number): boolean {
     const t = this.tileAt(x, y);
-    return t === T.WALL || t === T.DOOR || t === T.LOCKED || t === T.CRACKED || t === T.FOG;
+    return t === T.WALL || t === T.DOOR || t === T.LOCKED || t === T.CRACKED || t === T.FOG || t === T.RUBBLE || t === T.THORNS || t === T.TREE;
   }
+  /** Walkable for the player. */
   isWalkTile(t: number): boolean {
-    return t === T.FLOOR || t === T.OPEN || t === T.DOOR || t === T.STAIRS;
+    return (
+      t === T.FLOOR || t === T.OPEN || t === T.DOOR || t === T.STAIRS || t === T.BRIDGE || t === T.ENTRANCE || t === T.UPSTAIRS ||
+      (t === T.PHANTOM && this.resonance > 0)
+    );
+  }
+  enemyWalk(t: number): boolean {
+    return t === T.FLOOR || t === T.OPEN || t === T.DOOR || t === T.STAIRS || t === T.BRIDGE;
   }
   objAt(x: number, y: number): Obj | undefined {
     return this.floor.objects.find((o) => o.x === x && o.y === y);
   }
   blockObjAt(x: number, y: number): Obj | undefined {
-    return this.floor.objects.find((o) => o.x === x && o.y === y && BLOCKING.has(o.kind));
+    return this.floor.objects.find((o) => o.x === x && o.y === y && (BLOCKING.has(o.kind) || (o.kind === 'deco' && o.block)));
+  }
+  npcAt(x: number, y: number): NpcDef | undefined {
+    const s = this.floor.npcs.find((n) => n.x === x && n.y === y);
+    return s ? NPCS[s.id] : undefined;
   }
   enemyAt(x: number, y: number): Enemy | undefined {
     for (const e of this.enemies) {
@@ -574,14 +1085,15 @@ export class Game {
     return undefined;
   }
   canEnemyEnter(e: Enemy, x: number, y: number, phase = false): boolean {
-    if (x <= 0 || y <= 0 || x >= MAP_W - 1 || y >= MAP_H - 1) return false;
+    if (x <= 0 || y <= 0 || x >= this.floor.w - 1 || y >= this.floor.h - 1) return false;
     const t = this.tileAt(x, y);
-    if (!phase && !this.isWalkTile(t)) return false;
-    if (phase && t === T.FOG) return false;
+    if (!phase && !this.enemyWalk(t)) return false;
+    if (phase && (t === T.FOG || t === T.CHASM || t === T.WATER)) return false;
     if (x === this.player.x && y === this.player.y) return false;
     const o = this.enemyAt(x, y);
     if (o && o !== e) return false;
-    if (this.blockObjAt(x, y)) return false;
+    if (this.blockObjAt(x, y) || this.npcAt(x, y)) return false;
+    if (this.floor.kind === 'world' && regionAt(this.floor, x, y)?.name === 'Hollowmere') return false;
     return true;
   }
   moveEnemy(e: Enemy, x: number, y: number): void {
@@ -594,26 +1106,27 @@ export class Game {
   }
 
   computeDist(): void {
+    const f = this.floor;
     const d = this.dist;
     d.fill(1 << 30);
-    const q = new Int32Array(MAP_W * MAP_H);
+    const n = f.w * f.h;
+    const q = new Int32Array(n);
     let h = 0, t = 0;
     const s = this.idx(this.player.x, this.player.y);
     d[s] = 0;
     q[t++] = s;
-    const tiles = this.floor.tiles;
-    const blocked = new Uint8Array(MAP_W * MAP_H);
-    for (const o of this.floor.objects) if (BLOCKING.has(o.kind)) blocked[this.idx(o.x, o.y)] = 1;
+    const blocked = new Uint8Array(n);
+    for (const o of f.objects) if (BLOCKING.has(o.kind) || (o.kind === 'deco' && o.block)) blocked[o.y * f.w + o.x] = 1;
+    const maxD = f.kind === 'world' ? 45 : 1 << 30;
     while (h < t) {
       const c = q[h++];
       const nd = d[c] + 1;
-      const nb = [c - 1, c + 1, c - MAP_W, c + MAP_W];
-      for (const n of nb) {
-        if (n < 0 || n >= tiles.length || d[n] <= nd) continue;
-        const tt = tiles[n];
-        if (!(tt === T.FLOOR || tt === T.OPEN || tt === T.DOOR || tt === T.STAIRS) || blocked[n]) continue;
-        d[n] = nd;
-        q[t++] = n;
+      if (nd > maxD) continue;
+      for (const nb of [c - 1, c + 1, c - f.w, c + f.w]) {
+        if (nb < 0 || nb >= n || d[nb] <= nd) continue;
+        if (!this.enemyWalk(f.tiles[nb]) || blocked[nb]) continue;
+        d[nb] = nd;
+        q[t++] = nb;
       }
     }
   }
@@ -621,33 +1134,38 @@ export class Game {
   updateFov(): void {
     const f = this.floor, p = this.player;
     this.fovMask.fill(0);
-    computeFov(MAP_W, MAP_H, (x, y) => this.isOpaque(x, y), p.x, p.y, 22, this.fovMask);
+    computeFov(f.w, f.h, (x, y) => this.isOpaque(x, y), p.x, p.y, f.fovR, this.fovMask);
     const ft = Math.floor(this.tick / 3);
     const flick = 1 + 0.05 * Math.sin(ft * 2.7) + 0.03 * Math.sin(ft * 6.9 + 1);
-    const R = 8.5 * flick;
+    const R = (p.tools.includes('lantern') ? 11 : 8.5) * flick;
     const sources: { x: number; y: number; r: number }[] = [];
     for (const o of f.objects) {
       if (o.kind === 'bonfire') sources.push({ x: o.x, y: o.y, r: 7 });
+      else if (o.kind === 'lamp') sources.push({ x: o.x, y: o.y, r: 7 });
       else if (o.kind === 'brazier' && o.lit) sources.push({ x: o.x, y: o.y, r: 5 });
     }
     for (const fl of this.fields) if (fl.kind === 'fire' && (fl.x + fl.y) % 2 === 0) sources.push({ x: fl.x, y: fl.y, r: 3 });
-    for (let y = 0; y < MAP_H; y++) {
-      for (let x = 0; x < MAP_W; x++) {
-        const i = y * MAP_W + x;
-        if (!this.fovMask[i]) {
-          this.vis[i] = 0;
-          continue;
-        }
+    // Hollowmere's lamps and the great fire keep the town square half-lit
+    const amb = f.kind === 'world' && regionAt(f, p.x, p.y)?.name === 'Hollowmere' ? 0.42 : f.ambient;
+    const near = sources.filter((s) => Math.abs(s.x - p.x) < f.fovR + 8 && Math.abs(s.y - p.y) < f.fovR + 8);
+    const x0 = Math.max(0, p.x - f.fovR), x1 = Math.min(f.w - 1, p.x + f.fovR);
+    const y0 = Math.max(0, p.y - f.fovR), y1 = Math.min(f.h - 1, p.y + f.fovR);
+    this.vis.fill(0);
+    for (let y = y0; y <= y1; y++) {
+      for (let x = x0; x <= x1; x++) {
+        const i = y * f.w + x;
+        if (!this.fovMask[i]) continue;
         const d = Math.sqrt((x - p.x) ** 2 + (y - p.y) ** 2);
         let l = d < R ? Math.pow(1 - d / R, 0.8) : 0;
-        for (const s of sources) {
+        for (const s of near) {
           const ds = Math.sqrt((x - s.x) ** 2 + (y - s.y) ** 2);
           if (ds < s.r) l = Math.max(l, (1 - ds / s.r) * 0.9);
         }
+        if (amb > 0) l = Math.max(l, amb * (1 - d / (f.fovR + 1)));
         if (l > 0.04) {
           this.vis[i] = Math.min(1, l);
           f.seen[i] = 1;
-        } else this.vis[i] = 0;
+        }
       }
     }
   }
@@ -662,6 +1180,12 @@ export class Game {
     const e = this.enemyAt(nx, ny);
     if (e) {
       this.startAttack(false);
+      return;
+    }
+    const npc = this.npcAt(nx, ny);
+    if (npc) {
+      p.moveCd = 4;
+      this.talkTo(npc);
       return;
     }
     const ob = this.blockObjAt(nx, ny);
@@ -680,30 +1204,38 @@ export class Game {
     }
     const i = this.idx(nx, ny);
     const t = f.tiles[i];
-    if (t === T.LOCKED) {
-      p.moveCd = 4;
-      if (p.keys > 0) {
-        p.keys--;
-        f.tiles[i] = T.OPEN;
-        this.log('The crypt key turns. The lock screams like something alive.', 0xffd060);
-        this.sfx('unlock');
-      } else {
-        this.log('A crypt-lock seals this door. Somewhere on this floor is its key.', 0xb0a080);
-        this.sfx('locked');
+    const hint = (msg: string) => {
+      p.moveCd = 6;
+      if (this.tick - this.lastGlance > 25) {
+        this.log(msg, 0xb0a080);
+        this.lastGlance = this.tick;
       }
-      return;
+    };
+    switch (t) {
+      case T.LOCKED:
+        p.moveCd = 4;
+        if (p.keys > 0) {
+          p.keys--;
+          this.clearTile(nx, ny, T.OPEN);
+          this.log('The crypt key turns. The lock screams like something alive.', 0xffd060);
+          this.sfx('unlock');
+        } else {
+          hint('A crypt-lock seals this door. Somewhere on this floor is its key.');
+          this.sfx('locked');
+        }
+        return;
+      case T.CRACKED: return hint('The wall here is cracked and weeping dust. A heavy blow might break it.');
+      case T.FOG: return hint('A wall of grey fog. It will not let you leave.');
+      case T.RUBBLE: return hint(p.tools.includes('spade') ? 'Rubble. Your spade could shift it. [R]' : 'Collapsed stone, packed hard. You would need a spade.');
+      case T.THORNS: return hint(p.tools.includes('lantern') ? 'Black thorns, dry as paper. Burn them. [R]' : 'Black thorns, thick as wrists. Something would have to burn them.');
+      case T.CHASM: return hint(p.tools.includes('hook') ? 'A sheer drop. Your hook could bite the far side. [R]' : 'A sheer drop into nothing. Too far to jump.');
+      case T.PHANTOM:
+        if (this.resonance > 0) break;
+        return hint(p.tools.includes('bell') ? 'Mist hangs where a bridge should be. Ring the bell. [R]' : 'Mist hangs over the drop in the shape of a bridge. It will not hold you.');
+      case T.WATER: return hint('Black water. Too deep, too cold, too full.');
+      case T.BROKEN: return hint('The bridge is snapped in the middle. The dead pulled it down from underneath.');
+      case T.FENCE: case T.TREE: case T.WALL: return;
     }
-    if (t === T.CRACKED) {
-      p.moveCd = 4;
-      this.log('The wall here is cracked and weeping dust. A heavy blow might break it.', 0xb0a080);
-      return;
-    }
-    if (t === T.FOG) {
-      p.moveCd = 4;
-      this.log('A wall of grey fog. It will not let you leave.', 0xa0a0b0);
-      return;
-    }
-    if (t === T.WALL) return;
     if (t === T.DOOR) {
       f.tiles[i] = T.OPEN;
       this.sfx('door');
@@ -714,10 +1246,17 @@ export class Game {
     this.onPlayerEnter();
   }
 
+  /** Change a tile permanently (survives reloads). */
+  clearTile(x: number, y: number, to: number): void {
+    this.floor.tiles[this.idx(x, y)] = to;
+    this.setFlag(`clr:${this.floor.key}:${x},${y}`);
+  }
+
   onPlayerEnter(): void {
     const p = this.player;
     const f = this.floor;
-    // pickups
+    const here = f.tiles[this.idx(p.x, p.y)];
+    if (here !== T.PHANTOM) p.lastSafe = { x: p.x, y: p.y };
     for (let i = f.pickups.length - 1; i >= 0; i--) {
       const pk = f.pickups[i];
       if (pk.x !== p.x || pk.y !== p.y) continue;
@@ -736,20 +1275,21 @@ export class Game {
         this.log('You take the Crypt Key. It is warm, like a held hand.', 0xffd060);
       } else if (pk.kind === 'tallow') {
         this.sfx('tallow');
-        if (p.maxFlasks < 9) {
+        if (p.maxFlasks < 12) {
           p.maxFlasks++;
           p.flasks++;
           this.log(`Sacred Tallow. Your flask swells: ${p.maxFlasks} charges.`, 0xf0e0a0);
-        } else {
-          p.flasks = p.maxFlasks;
-          this.log('Sacred Tallow. Your flask is already full to bursting.', 0xf0e0a0);
-        }
+        } else p.flasks = p.maxFlasks;
       } else if (pk.kind === 'ashes') {
         p.ashes += pk.amount ?? 0;
         this.sfx(pk.stain ? 'reclaim' : 'ashes');
-        if (pk.stain) this.log(`You reclaim your bloodstain: ${pk.amount} ashes.`, 0xff6060);
-        else this.log(`+${pk.amount} ashes`, 0xb0a8ff);
-      }
+        if (pk.stain) {
+          this.log(`You reclaim your bloodstain: ${pk.amount} ashes.`, 0xff6060);
+          this.stain = null;
+        } else this.log(`+${pk.amount} ashes`, 0xb0a8ff);
+      } else if (pk.kind === 'lore') this.giveLore(pk.id!);
+      else if (pk.kind === 'quest') this.giveQuestItem(pk.id!);
+      else if (pk.kind === 'tool') this.giveTool(pk.id as ToolId);
       f.pickups.splice(i, 1);
     }
     for (const o of f.objects) {
@@ -757,24 +1297,37 @@ export class Game {
       if (o.kind === 'rune') this.stepRune(o);
       else if (o.kind === 'message') this.log(`Scrawled in blood: "${o.text}"`, 0xe0a050);
     }
-    if (f.tiles[this.idx(p.x, p.y)] === T.STAIRS) {
-      const left = f.pickups.filter((pk) => pk.kind === 'item' && Math.abs(pk.x - p.x) <= 8 && Math.abs(pk.y - p.y) <= 8).length;
-      this.modal = {
-        title: 'STAIRS DOWN',
-        lines: [
-          `Descend to depth ${this.depth + 1}? There is no way back up.`,
-          ...(left ? ['', `(${left} item${left > 1 ? 's' : ''} still lie${left > 1 ? '' : 's'} on the floor nearby.)`] : []),
-          '',
-          '[E/Enter] descend     [Esc] stay',
-        ],
-        kind: 'stairs',
-      };
-      this.mode = 'read';
-      this.buf = null;
+    if (f.kind === 'dungeon') {
+      const ri = f.roomAt[this.idx(p.x, p.y)];
+      const room = ri >= 0 ? f.rooms[ri] : null;
+      if (room && room.theme && !room.visited) {
+        room.visited = true;
+        const th = THEMES[room.theme];
+        if (th) {
+          this.log(`${th.name}. ${th.text}`, 0xb8a8c8);
+          if (!this.banner) this.banner = { text: th.name.toUpperCase(), sub: '', color: 0xb8a8c8, t: 35, max: 35 };
+        }
+      }
+    }
+    if (this.mode !== 'play') return;
+    if (here === T.STAIRS) {
+      this.confirm('STAIRS DOWN', ['Go deeper? The bonfire below will take you home.'], () => this.descend());
       return;
     }
-    // boss arena
-    if (f.bossRoom && !this.bossDefeated && !this.bossActive && this.inRoom(p.x, p.y, f.bossRoom)) {
+    if (here === T.UPSTAIRS) {
+      this.confirm('THE WAY UP', ['Climb back to the surface?'], () => this.leaveDungeon());
+      return;
+    }
+    if (here === T.ENTRANCE) {
+      const ent = f.entrances.find((en) => en.x === p.x && en.y === p.y);
+      if (ent) {
+        const def = DUNGEONS[ent.dungeon];
+        this.confirm(def.name.toUpperCase(), [def.enter, '', 'Go down?'], () => this.enterLocation(`d${ent.dungeon}f0`));
+      }
+      return;
+    }
+    if (f.kind === 'world') this.checkRegion();
+    if (f.bossRoom && f.bossId && !this.bossDead(f.bossId) && !this.bossActive && this.inRoom(p.x, p.y, f.bossRoom)) {
       const boss = this.enemies.find((e) => e.boss);
       if (boss) {
         this.bossActive = true;
@@ -789,10 +1342,26 @@ export class Game {
     }
   }
 
+  confirm(title: string, lines: string[], onYes: () => void): void {
+    this.modal = { title, lines: [...lines, '', '[E/Enter] yes     [Esc] no'], kind: 'confirm', onYes };
+    this.mode = 'read';
+    this.buf = null;
+  }
+
   descend(): void {
-    this.log('You descend. The air grows thick and warm, like breath.', 0x9090c0);
+    const f = this.floor;
+    this.log('You go deeper. The air grows thick and warm, like breath.', 0x9090c0);
     this.sfx('descend');
-    this.enterFloor(this.depth + 1);
+    this.enterLocation(`d${f.dungeon}f${f.level + 1}`);
+  }
+
+  leaveDungeon(): void {
+    const d = this.floor.dungeon;
+    const w = this.getFloor('world');
+    const ent = w.entrances.find((e) => e.dungeon === d)!;
+    this.sfx('descend');
+    this.enterLocation('world', { x: ent.x, y: ent.y + 1 });
+    this.log('You climb back up into the dusk.', 0x9090c0);
   }
 
   spendSta(n: number): void {
@@ -823,14 +1392,13 @@ export class Game {
     }
     this.spendSta(22 * (1 - this.stats.rollCost / 100));
     p.act = { kind: 'roll', t: 6, dir: { ...p.face } };
-    this.sfx('roll');
     p.iframes = 6;
+    this.sfx('roll');
   }
 
   startParry(): void {
     const p = this.player;
-    if (p.act) return;
-    if (p.sta <= 0) return;
+    if (p.act || p.sta <= 0) return;
     this.spendSta(10);
     p.act = { kind: 'parry', t: PARRY_TOTAL, dir: { ...p.face } };
   }
@@ -886,18 +1454,243 @@ export class Game {
     const p = this.player;
     const nx = p.x + d.x, ny = p.y + d.y;
     const t = this.tileAt(nx, ny);
-    if (!this.isWalkTile(t) || this.enemyAt(nx, ny) || this.blockObjAt(nx, ny)) return;
+    if (!this.isWalkTile(t) || t === T.ENTRANCE || t === T.UPSTAIRS || t === T.STAIRS) return;
+    if (this.enemyAt(nx, ny) || this.blockObjAt(nx, ny) || this.npcAt(nx, ny)) return;
     if (t === T.DOOR) this.floor.tiles[this.idx(nx, ny)] = T.OPEN;
     p.x = nx;
     p.y = ny;
     this.onPlayerEnter();
   }
 
+  // ================================================================ tools
+  useTool(): void {
+    const p = this.player;
+    if (p.act) return;
+    const t = p.tool >= 0 ? TOOLS[p.tool] : null;
+    if (!t || !p.tools.includes(t)) {
+      this.log(p.tools.length ? 'Choose a tool with 1-4.' : 'Your hands are empty. You used to carry a spade. Your hut is east of town.', 0x8a8478);
+      return;
+    }
+    if (p.sta <= 0) {
+      this.log('Too exhausted.', 0x808060);
+      return;
+    }
+    switch (t) {
+      case 'spade': return this.useSpade();
+      case 'lantern': return this.useLantern();
+      case 'hook': return this.useHook();
+      case 'bell': return this.useBell();
+    }
+  }
+
+  useSpade(): void {
+    const p = this.player;
+    const x = p.x + p.face.x, y = p.y + p.face.y;
+    this.spendSta(12);
+    p.act = { kind: 'recover', t: 10, dir: p.face };
+    this.sfx('dig');
+    if (this.tileAt(x, y) === T.RUBBLE) {
+      this.clearTile(x, y, T.FLOOR);
+      this.shake = 2;
+      this.log('You dig. The stone gives. You were always good at this.', 0xb0a080);
+      for (let k = 0; k < 4; k++) this.addFx(x + this.rng.int(-1, 1), y + this.rng.int(-1, 1), '∙', 0xa09080, 6);
+      return;
+    }
+    const o = this.objAt(x, y);
+    if (o?.kind === 'grave') {
+      if (o.name?.startsWith('WREN')) {
+        this.log('No. Not again. You put the spade down, and your hands shake for a long time.', 0xffe060);
+        return;
+      }
+      if (o.dug) {
+        this.log('Already dug. Already empty. Already yours.', 0x8a8478);
+        return;
+      }
+      o.dug = true;
+      this.setFlag(`grave:${this.floor.key}:${x},${y}`);
+      const r = this.rng.next();
+      if (r < 0.25) {
+        this.log('You dig. Something digs back. It was not empty.', 0xff6050);
+        const e = this.spawnEnemyNear('hollow', x, y, 1, 2);
+        if (e) {
+          e.aware = true;
+          e.state = 'chase';
+          e.cd = 8;
+        }
+      } else if (r < 0.7) {
+        this.log('You dig. Grave goods: whatever the family could spare.', 0xc0a070);
+        this.dropAt(x, y, rollLoot(this.rng, 'urn', this.tierHere(), this.stats.mf));
+      } else this.log('You dig. Bones, a wedding band, nothing worth taking. You take it anyway, then put it back.', 0x8a8478);
+      return;
+    }
+    this.log("You dig. Dirt. It is always just dirt, until it isn't.", 0x8a8478);
+  }
+
+  useLantern(): void {
+    const p = this.player;
+    this.spendSta(18);
+    p.act = { kind: 'recover', t: 9, dir: p.face };
+    this.sfx('fire');
+    for (let s = 1; s <= 3; s++) {
+      const x = p.x + p.face.x * s, y = p.y + p.face.y * s;
+      const t = this.tileAt(x, y);
+      if (t === T.THORNS) {
+        this.clearTile(x, y, T.FLOOR);
+        this.log('The thorns catch and shriek as they burn. The way is open.', 0xffa040);
+        this.addField(x, y, 'fire', 30);
+        return;
+      }
+      if (this.isOpaque(x, y)) return;
+      this.addFx(x, y, '≈', [0xffb040, 0xff7020, 0xffd060][s % 3], 5);
+      const e = this.enemyAt(x, y);
+      if (e) {
+        e.burn = 80;
+        this.hurtEnemy(e, 6 + this.tierHere() * 2, 5, { fromPlayer: true });
+        return;
+      }
+      const o = this.blockObjAt(x, y);
+      if (o?.kind === 'brazier') {
+        this.lightBrazier(o);
+        return;
+      }
+      if (o) return;
+    }
+  }
+
+  isGap(t: number): boolean {
+    return t === T.CHASM;
+  }
+
+  useHook(): void {
+    const p = this.player;
+    const d = p.face;
+    this.spendSta(15);
+    p.act = { kind: 'recover', t: 10, dir: d };
+    this.sfx('hook');
+    let gaps = 0;
+    for (let s = 1; s <= HOOK_RANGE; s++) {
+      const x = p.x + d.x * s, y = p.y + d.y * s;
+      const t = this.tileAt(x, y);
+      this.addFx(x, y, d.x ? '─' : '│', 0xa0a8c0, 3);
+      const e = this.enemyAt(x, y);
+      if (e) {
+        if (e.boss) {
+          this.hurtEnemy(e, 5, 25, { fromPlayer: true });
+          return;
+        }
+        const tx = p.x + d.x, ty = p.y + d.y;
+        if (s > 1 && this.canEnemyEnter(e, tx, ty)) this.moveEnemy(e, tx, ty);
+        this.hurtEnemy(e, 5, 40, { fromPlayer: true });
+        if (!e.dead) this.log(`The hook bites into ${e.name} and drags it to you.`, 0xa0a8c0);
+        return;
+      }
+      const o = this.blockObjAt(x, y);
+      if (o) {
+        if (o.kind === 'boulder') this.pullBoulder(o, s);
+        else this.log('The hook bites, holds, and drags nothing.', 0x8a8478);
+        return;
+      }
+      if (this.isGap(t)) {
+        gaps++;
+        continue;
+      }
+      if (this.isWalkTile(t) && t !== T.ENTRANCE) {
+        if (gaps > 0) {
+          if (this.npcAt(x, y)) return;
+          p.x = x;
+          p.y = y;
+          p.iframes = 4;
+          this.log('The hook bites the far edge. You haul yourself across the drop.', 0xa0a8c0);
+          this.onPlayerEnter();
+        } else this.log('The hook clatters on stone and bites nothing.', 0x8a8478);
+        return;
+      }
+      if (t === T.WATER) {
+        this.log('The hook sinks. There is nothing to bite out there.', 0x8a8478);
+        return;
+      }
+      if (t === T.PHANTOM) {
+        this.log('The chain passes through the mist and finds nothing to bite. Something else is needed here.', 0x8a8478);
+        return;
+      }
+      this.log(gaps ? 'The hook strikes rock and slips.' : 'The hook strikes stone.', 0x8a8478);
+      return;
+    }
+    this.log('The chain pays out to its end and falls short.', 0x8a8478);
+  }
+
+  pullBoulder(o: Obj, s: number): void {
+    const f = this.floor;
+    const p = this.player;
+    const d = p.face;
+    const pz = f.puzzles[o.puzzle!];
+    if (pz.solved) return;
+    const validStone = (x: number, y: number) =>
+      this.inRoom(x, y, pz.room) && f.tiles[this.idx(x, y)] === T.FLOOR && !f.noBoulder[this.idx(x, y)] && !this.blockObjAt(x, y) && !this.enemyAt(x, y);
+    if (s === 1) {
+      // adjacent: step back and drag the stone into your place
+      const bx = p.x - d.x, by = p.y - d.y;
+      if (!this.isWalkTile(this.tileAt(bx, by)) || this.blockObjAt(bx, by) || this.enemyAt(bx, by) || !validStone(p.x, p.y)) {
+        this.log('No room to haul it.', 0x8a8478);
+        return;
+      }
+      o.x = p.x;
+      o.y = p.y;
+      p.x = bx;
+      p.y = by;
+    } else {
+      const tx = o.x - d.x, ty = o.y - d.y;
+      if (!validStone(tx, ty)) {
+        this.log('The stone grinds but will not come.', 0x8a8478);
+        return;
+      }
+      o.x = tx;
+      o.y = ty;
+    }
+    this.sfx('push');
+    this.checkSokoban(pz, o);
+  }
+
+  useBell(): void {
+    const p = this.player;
+    this.spendSta(25);
+    p.act = { kind: 'recover', t: 12, dir: p.face };
+    this.sfx('bell');
+    const first = !this.flags.has('rang');
+    this.setFlag('rang');
+    this.resonance = RESONANCE;
+    this.shake = 3;
+    this.log(first ? 'You swing the bell. It makes no sound. Everything hears it anyway.' : 'You ring the silent bell.', 0xd0c8ff);
+    let phantoms = 0;
+    for (let y = p.y - 12; y <= p.y + 12; y++)
+      for (let x = p.x - 12; x <= p.x + 12; x++) if (this.tileAt(x, y) === T.PHANTOM) phantoms++;
+    if (phantoms) this.log('The mist over the drop thickens, and holds its shape.', 0xd0c8ff);
+    for (const e of this.enemies) {
+      if (e.boss || Math.max(Math.abs(e.x - p.x), Math.abs(e.y - p.y)) > 10) continue;
+      if (e.def === 'wraith' || e.def === 'choirling') {
+        this.staggerEnemy(e, 70);
+        this.addFx(e.x, e.y - 1, '♫', 0xd0c8ff, 10);
+      }
+    }
+  }
+
+  endResonance(): void {
+    const p = this.player;
+    if (this.tileAt(p.x, p.y) === T.PHANTOM) {
+      this.log('The bridge forgets itself. You fall.', 0xff6060);
+      p.x = p.lastSafe.x;
+      p.y = p.lastSafe.y;
+      this.sfx('boom');
+      this.hurtPlayer(this.stats.maxHp * 0.25, { env: true, unavoidable: true });
+    }
+  }
+
+  // ================================================================ combat
   attackTiles(pattern: string, x: number, y: number, f: Vec, heavy: boolean): Vec[] {
     const r = { x: -f.y, y: f.x };
     const at = (a: number, b: number): Vec => ({ x: x + f.x * a + r.x * b, y: y + f.y * a + r.y * b });
     switch (pattern) {
-      case 'front1': return heavy ? [at(1, 0)] : [at(1, 0)];
+      case 'front1': return [at(1, 0)];
       case 'arc3': return heavy ? [at(1, 0), at(1, 1), at(1, -1), at(2, 0)] : [at(1, 0), at(1, 1), at(1, -1)];
       case 'line2': {
         const out = [at(1, 0)];
@@ -915,8 +1708,7 @@ export class Game {
 
   resolveAttack(heavy: boolean, dir: Vec): void {
     const p = this.player;
-    const it = p.eq.weapon;
-    const b = weaponBase(it);
+    const b = weaponBase(p.eq.weapon);
     const tiles = this.attackTiles(b.pattern, p.x, p.y, dir, heavy);
     const slash = dir.x !== 0 ? '|' : '─';
     const hit = new Set<Enemy>();
@@ -927,7 +1719,7 @@ export class Game {
       const o = this.blockObjAt(t.x, t.y);
       if (o && o.kind === 'urn') this.breakUrn(o);
       if (heavy && this.tileAt(t.x, t.y) === T.CRACKED) {
-        this.floor.tiles[this.idx(t.x, t.y)] = T.FLOOR;
+        this.clearTile(t.x, t.y, T.FLOOR);
         this.shake = 4;
         this.log('The cracked wall bursts apart! A hidden passage.', 0xffd080);
         this.sfx('crumble');
@@ -943,6 +1735,7 @@ export class Game {
     }
     for (const e of hit) this.playerHit(e, heavy, b);
     if (this.stats.uniques.has('tithe')) p.hp = Math.max(1, p.hp - Math.round(this.stats.maxHp * 0.02));
+    if (this.stats.uniques.has('scourge') && hit.size) p.hp = Math.max(1, p.hp - hit.size);
     const rec = Math.round(b.rec * (heavy ? 1.4 : 1));
     p.act = { kind: 'recover', t: rec, dir };
     this.noise = 3;
@@ -955,7 +1748,7 @@ export class Game {
     const lo = it ? it.dmgMin : b.dmg[0], hi = it ? it.dmgMax : b.dmg[1];
     let dmg = this.rng.int(lo, hi) + st.flatDmg;
     let mult = 1 + st.dmgPct / 100 + scaleBonus(b, p);
-    if (st.uniques.has('grudge')) mult += (1 - p.hp / st.maxHp);
+    if (st.uniques.has('grudge')) mult += 1 - p.hp / st.maxHp;
     if (heavy) mult *= 1.8;
     dmg *= mult;
     let label = '';
@@ -984,7 +1777,6 @@ export class Game {
   ): void {
     if (e.dead) return;
     const p = this.player;
-    // crypt knight shield
     if (e.def === 'knight' && !e.boss && e.state !== 'stagger' && o.fromPlayer && !o.heavy && !o.label) {
       const tx = sign(p.x - e.x), ty = sign(p.y - e.y);
       if (tx === e.face.x && ty === e.face.y) {
@@ -1010,7 +1802,7 @@ export class Game {
       this.target = e;
       this.targetT = 160;
       const st = this.stats;
-      if (st.lifesteal > 0) p.hp = Math.min(st.maxHp, p.hp + d * st.lifesteal / 100);
+      if (st.lifesteal > 0) p.hp = Math.min(st.maxHp, p.hp + (d * st.lifesteal) / 100);
       if (st.uniques.has('ember') || (st.burn > 0 && this.rng.chance(st.burn / 100))) e.burn = 60;
       if (st.bleed > 0) {
         e.bleed += st.bleed;
@@ -1051,7 +1843,7 @@ export class Game {
       const bx = x + this.rng.int(-1, 1), by = y + this.rng.int(-1, 1);
       if (!this.inBounds(bx, by)) continue;
       const i = this.idx(bx, by);
-      if (this.isWalkTile(f.tiles[i]) && f.decal[i] === 0) f.decal[i] = 1;
+      if ((f.tiles[i] === T.FLOOR || f.tiles[i] === T.OPEN) && f.decal[i] === 0) f.decal[i] = 1;
     }
   }
 
@@ -1062,13 +1854,20 @@ export class Game {
     this.teles = this.teles.filter((tl) => tl.owner !== e || tl.persist);
     const p = this.player;
     const st = this.stats;
-    const ashes = Math.round(e.ashes * (1 + st.ashFind / 100));
+    const d = ENEMIES[e.def];
+    let ashes = Math.round(e.ashes * (1 + st.ashFind / 100));
+    if (st.uniques.has('cleaver') && d.hollow && !e.boss) ashes = Math.round(ashes * 1.5);
     p.ashes += ashes;
     this.kills++;
     const f = this.floor;
     const i = this.idx(e.x, e.y);
-    if (this.isWalkTile(f.tiles[i])) f.decal[i] = e.def === 'archer' || e.def === 'sentinel' ? 3 : 2;
+    if (f.tiles[i] === T.FLOOR || f.tiles[i] === T.OPEN) f.decal[i] = e.def === 'archer' || e.def === 'sentinel' ? 3 : 2;
     this.bloodSpray(e.x, e.y, 3);
+    if (e.flag) this.setFlag(e.flag);
+    if (e.flag === 'tomas_dead') {
+      this.log('Little Tomas falls, and does not get up. His boots are very well made.', 0xd0b080);
+      if (this.quest('harrow') >= 1) this.setQuest('harrow', 2);
+    }
     if (e.boss) {
       this.onBossDefeated(e);
       return;
@@ -1076,10 +1875,10 @@ export class Game {
     this.sfxAt('kill', e.x, e.y);
     this.addFx(e.x + 1, e.y, `+${ashes}`, 0xb0a8ff, 8);
     if (e.elite) this.log(`${e.name} is slain. +${ashes} ashes`, 0xffc040);
-    // drops
-    const d = ENEMIES[e.def];
-    const table = e.elite ? 'elite' : d.loot;
-    this.dropAt(e.x, e.y, rollLoot(this.rng, table, this.depth, st.mf));
+    this.dropAt(e.x, e.y, rollLoot(this.rng, e.elite ? 'elite' : d.loot, e.tier, st.mf));
+    const heartsOut = this.questItemCount('hollow_heart') + this.floor.pickups.filter((pk) => pk.id === 'hollow_heart').length;
+    if (d.hollow && this.quest('hearts') === 1 && heartsOut < 5 && this.rng.chance(0.35))
+      this.floor.pickups.push({ x: e.x, y: e.y, kind: 'quest', id: 'hollow_heart' });
     if (st.uniques.has('ninth')) {
       p.sta = Math.min(st.maxSta, p.sta + 15);
       p.hp = Math.min(st.maxHp, p.hp + 5);
@@ -1103,30 +1902,39 @@ export class Game {
   onBossDefeated(e: Enemy): void {
     const f = this.floor;
     const b = BOSSES[e.boss!];
-    this.bossDefeated = true;
+    this.setFlag(`boss:${e.boss}`);
     this.bossActive = false;
     this.teles = [];
     this.projs = [];
     for (const o of this.enemies) if (o !== e && f.bossRoom && this.inRoom(o.x, o.y, f.bossRoom)) o.dead = true;
-    f.tiles[this.idx(f.lockedDoor.x, f.lockedDoor.y)] = T.OPEN;
+    this.openArena(f);
     const r = f.bossRoom!;
     const c = { x: r.x + (r.w >> 1), y: r.y + (r.h >> 1) };
-    f.tiles[this.idx(c.x, c.y)] = T.STAIRS;
-    if (this.player.x === c.x && this.player.y === c.y) f.tiles[this.idx(c.x, c.y + 2)] = T.STAIRS;
+    if (this.player.x === c.x && this.player.y === c.y) {
+      f.tiles[this.idx(c.x, c.y)] = T.FLOOR;
+      f.tiles[this.idx(c.x, c.y + 2)] = T.UPSTAIRS;
+    }
     this.banner = { text: 'V A N Q U I S H E D', sub: b.name, color: 0xffd060, t: 90, max: 90 };
     this.log(b.death, 0xffd080);
+    this.log(`+${e.ashes} ashes.`, 0xb0a8ff);
     this.sfx('victory');
-    this.log(`+${e.ashes} ashes. Stairs have opened in the arena.`, 0xb0a8ff);
     this.shake = 10;
-    const drops: Drop[] = rollLoot(this.rng, 'boss', this.depth, this.stats.mf);
+    const drops: Drop[] = rollLoot(this.rng, 'boss', f.depth, this.stats.mf);
     const owned = new Set<string>();
     for (const it of [...this.player.inv, ...SLOTS.map((s) => this.player.eq[s])]) if (it?.unique) owned.add(it.unique);
-    const pool = UNIQUES.filter((u) => !owned.has(u.id));
-    const u = this.rng.pick(pool.length ? pool : UNIQUES);
-    drops.push({ kind: 'item', item: makeUnique(this.rng, u.id, this.depth) });
+    const pool = UNIQUES.filter((u) => !u.questOnly && !owned.has(u.id));
+    const u = this.rng.pick(pool.length ? pool : UNIQUES.filter((x) => !x.questOnly));
+    drops.push({ kind: 'item', item: makeUnique(this.rng, u.id, f.depth) });
     drops.push({ kind: 'tallow' });
     this.dropAt(e.x, e.y, drops);
-    if (e.boss === 'king' && !this.victorySeen) this.victoryPending = true;
+    const story = BOSS_STORY[e.boss!];
+    if (story?.lore && !this.lore.includes(story.lore)) f.pickups.push({ x: c.x - 1, y: c.y - 1, kind: 'lore', id: story.lore });
+    if (story?.quest && !this.hasQuestItem(story.quest) && this.quest('bridge') < 2) f.pickups.push({ x: c.x + 1, y: c.y - 1, kind: 'quest', id: story.quest });
+    if (e.boss === 'king') {
+      this.giveLore('crown');
+      this.setQuest('main', 5);
+      this.pendingEnding = true;
+    } else this.log('A way up has opened in the arena.', 0xb0a8ff);
     this.save();
   }
 
@@ -1158,19 +1966,21 @@ export class Game {
         }
         si--;
       }
-      if (d.kind === 'item' && d.item.rarity >= 2) this.sfx(d.item.rarity === 3 ? 'legendary' : 'rare');
-      if (d.kind === 'item' && d.item.rarity >= 2) this.addFx(s.x, s.y - 1, '↓', RARITY_COLORS[d.item.rarity], 20);
+      if (d.kind === 'item' && d.item.rarity >= 2) {
+        this.sfx(d.item.rarity === 3 ? 'legendary' : 'rare');
+        this.addFx(s.x, s.y - 1, '↓', RARITY_COLORS[d.item.rarity], 20);
+      }
     }
   }
 
   // ================================================================ damage to player
   hurtPlayer(
     dmg: number,
-    o: { owner?: Enemy | null; parryable?: boolean; poison?: boolean; burn?: boolean; env?: boolean } = {},
+    o: { owner?: Enemy | null; parryable?: boolean; poison?: boolean; burn?: boolean; env?: boolean; unavoidable?: boolean } = {},
   ): 'dodge' | 'parry' | 'hit' {
     const p = this.player;
     const st = this.stats;
-    if (p.iframes > 0) {
+    if (p.iframes > 0 && !o.unavoidable) {
       if (!o.env) this.addFx(p.x, p.y - 1, 'dodge', 0x9090a0, 5);
       return 'dodge';
     }
@@ -1186,7 +1996,7 @@ export class Game {
     }
     if (o.burn && st.uniques.has('ember')) return 'hit';
     let d = dmg * (100 / (100 + st.armor));
-    if (p.act?.kind === 'parry') d *= 1.15; // whiffed parry: punished a little
+    if (p.act?.kind === 'parry') d *= 1.15;
     const dd = Math.max(1, Math.round(d));
     p.hp -= dd;
     p.flash = 4;
@@ -1197,7 +2007,7 @@ export class Game {
     if (o.poison) p.poison = Math.max(p.poison, 80);
     if (o.burn) p.burn = Math.max(p.burn, 50);
     if (o.owner && !o.env) {
-      if (st.thorns > 0) this.hurtEnemy(o.owner, dd * st.thorns / 100, 0, {});
+      if (st.thorns > 0) this.hurtEnemy(o.owner, (dd * st.thorns) / 100, 0, {});
       if (o.owner.elite?.mods.includes('vampiric')) o.owner.hp = Math.min(o.owner.maxHp, o.owner.hp + dd);
     }
     if (p.hp <= 0) this.die();
@@ -1213,9 +2023,12 @@ export class Game {
     this.deaths++;
     this.deathLine = this.rng.pick(DEATH_LINES);
     this.sfx('death');
-    for (let i = f.pickups.length - 1; i >= 0; i--) if (f.pickups[i].stain) f.pickups.splice(i, 1);
+    for (const fl of this.floors.values()) fl.pickups = fl.pickups.filter((pk) => !pk.stain);
+    this.stain = null;
     if (p.ashes > 0) {
-      f.pickups.push({ x: p.x, y: p.y, kind: 'ashes', amount: p.ashes, stain: true });
+      const at = this.tileAt(p.x, p.y) === T.PHANTOM ? p.lastSafe : { x: p.x, y: p.y };
+      f.pickups.push({ x: at.x, y: at.y, kind: 'ashes', amount: p.ashes, stain: true });
+      this.stain = { key: f.key, x: at.x, y: at.y, amount: p.ashes };
       p.ashes = 0;
     }
     this.bloodSpray(p.x, p.y, 6);
@@ -1223,7 +2036,7 @@ export class Game {
 
   respawn(): void {
     const p = this.player;
-    const f = this.floor;
+    this.lament = 0;
     this.recalc();
     p.hp = this.stats.maxHp;
     p.sta = this.stats.maxSta;
@@ -1232,38 +2045,40 @@ export class Game {
     p.burn = 0;
     p.act = null;
     p.iframes = 0;
-    p.x = f.start.x;
-    p.y = f.start.y;
-    this.resetWorld();
-    this.mode = 'play';
-    this.log('You return to the bonfire. Your bloodstain waits where you fell.', 0xd08060);
-  }
-
-  resetWorld(): void {
-    const f = this.floor;
-    this.teles = [];
-    this.projs = [];
-    this.fields = [];
-    this.bossActive = false;
-    if (f.tiles[this.idx(f.lockedDoor.x, f.lockedDoor.y)] === T.FOG) f.tiles[this.idx(f.lockedDoor.x, f.lockedDoor.y)] = T.OPEN;
-    this.spawnEnemies();
-    this.target = null;
-    if (this.lament) {
-      this.lament = 0;
-      this.recalc();
+    for (const fl of this.floors.values()) {
+      fl.needsRespawn = true;
+      fl.liveEnemies = null;
     }
-    this.updateFov();
+    this.enemies = [];
+    this.mode = 'play';
+    this.enterLocation(this.respawnAt.key, { x: this.respawnAt.x, y: this.respawnAt.y });
+    this.log('You return to the flame. Your bloodstain waits where you fell.', 0xd08060);
   }
 
-  rest(): void {
+  rest(o: Obj): void {
     const p = this.player;
+    this.lament = 0;
     this.recalc();
     p.hp = this.stats.maxHp;
     p.sta = this.stats.maxSta;
     p.flasks = p.maxFlasks;
     p.poison = 0;
     p.burn = 0;
-    this.resetWorld();
+    const f = this.floor;
+    this.setFlag(`fire:${f.key}:${o.x},${o.y}`);
+    this.respawnAt = { key: f.key, x: o.x, y: o.y + 1 };
+    for (const fl of this.floors.values()) {
+      if (fl === f) continue;
+      fl.needsRespawn = true;
+      fl.liveEnemies = null;
+    }
+    this.teles = [];
+    this.projs = [];
+    this.fields = [];
+    this.bossActive = false;
+    if (this.inBounds(f.lockedDoor.x, f.lockedDoor.y) && this.tileAt(f.lockedDoor.x, f.lockedDoor.y) === T.FOG) f.tiles[this.idx(f.lockedDoor.x, f.lockedDoor.y)] = T.OPEN;
+    this.spawnEnemies();
+    this.target = null;
     this.mode = 'bonfire';
     this.bonSel = 0;
     this.sfx('rest');
@@ -1276,8 +2091,13 @@ export class Game {
     const p = this.player;
     const spots: Vec[] = [{ x: p.x + p.face.x, y: p.y + p.face.y }, ...DIRS.map((d) => ({ x: p.x + d.x, y: p.y + d.y })), ...DIRS8.map((d) => ({ x: p.x + d.x, y: p.y + d.y })), { x: p.x, y: p.y }];
     for (const s of spots) {
+      const npc = this.npcAt(s.x, s.y);
+      if (npc) {
+        this.talkTo(npc);
+        return;
+      }
       const o = this.objAt(s.x, s.y);
-      if (o && o.kind !== 'plate' && o.kind !== 'spikes' && o.kind !== 'rune' && !(o.kind === 'chest' && o.open)) {
+      if (o && !['plate', 'spikes', 'rune', 'lamp'].includes(o.kind) && !(o.kind === 'chest' && o.open)) {
         this.useObject(o);
         return;
       }
@@ -1287,7 +2107,7 @@ export class Game {
 
   useObject(o: Obj): void {
     switch (o.kind) {
-      case 'bonfire': this.rest(); break;
+      case 'bonfire': this.rest(o); break;
       case 'chest': this.openChest(o); break;
       case 'brazier': this.lightBrazier(o); break;
       case 'tablet': {
@@ -1299,35 +2119,47 @@ export class Game {
         this.mode = 'read';
         break;
       }
-      case 'message':
-        this.log(`Scrawled in blood: "${o.text}"`, 0xe0a050);
+      case 'message': this.log(`Scrawled in blood: "${o.text}"`, 0xe0a050); break;
+      case 'urn': this.log('A funeral urn. Strike it to see what the dead were buried with.', 0x8a8478); break;
+      case 'boulder': this.log('A heavy stone. Walk into it to push.', 0x8a8478); break;
+      case 'grave': {
+        const wren = o.name?.startsWith('WREN');
+        this.log(wren ? o.name! : o.dug ? 'An open grave. You did that.' : `${cap(o.name ?? 'a grave')}.${this.player.tools.includes('spade') ? ' Your spade could open it. [R]' : ''}`, wren ? 0xffe060 : 0x8a8478);
         break;
-      case 'urn':
-        this.log('A funeral urn. Strike it to see what the dead were buried with.', 0x8a8478);
-        break;
-      case 'boulder':
-        this.log('A heavy stone. Walk into it to push.', 0x8a8478);
-        break;
+      }
+      case 'deco': this.log(`${cap(o.name ?? 'something')}.`, 0x9a9488); break;
     }
   }
 
   openChest(o: Obj): void {
     if (o.open) return;
     o.open = true;
+    this.setFlag(`chest:${this.floor.key}:${o.x},${o.y}`);
     const p = this.player;
     this.shake = 1;
     this.sfx('chest');
-    if (o.loot === 'key') {
+    const tier = this.tierHere();
+    const loot = o.loot ?? 'normal';
+    if (loot.startsWith('tool:')) {
+      const t = loot.slice(5) as ToolId;
+      if (!p.tools.includes(t)) this.giveTool(t);
+      return;
+    }
+    if (loot.startsWith('key')) {
       this.log('The chest groans open. Inside, wrapped in a strip of skin: a Crypt Key.', 0xffd060);
-      this.floor.pickups.push({ x: p.x, y: p.y, kind: 'key' });
-      this.onPlayerEnter();
-      this.dropAt(o.x, o.y, rollLoot(this.rng, 'chest', this.depth, this.stats.mf).slice(0, 1));
-    } else if (o.loot === 'treasure') {
+      p.keys++;
+      this.sfx('key');
+      const tool = loot.split('+')[1] as ToolId | undefined;
+      if (tool && !p.tools.includes(tool)) this.giveTool(tool);
+      else this.dropAt(o.x, o.y, rollLoot(this.rng, 'chest', tier, this.stats.mf).slice(0, 1));
+      return;
+    }
+    if (loot === 'treasure') {
       this.log('A reliquary chest. Gold light spills out.', 0xffc040);
-      this.dropAt(o.x, o.y, rollLoot(this.rng, 'treasure', this.depth, this.stats.mf));
+      this.dropAt(o.x, o.y, rollLoot(this.rng, 'treasure', tier, this.stats.mf));
     } else {
       this.log('The chest opens with a sigh of old air.', 0xc0a070);
-      this.dropAt(o.x, o.y, rollLoot(this.rng, 'chest', this.depth, this.stats.mf));
+      this.dropAt(o.x, o.y, rollLoot(this.rng, 'chest', tier, this.stats.mf));
     }
   }
 
@@ -1338,7 +2170,7 @@ export class Game {
     if (this.rng.chance(0.35)) this.log(this.rng.pick(URN_LINES), 0x8a8478);
     for (let k = 0; k < 3; k++) this.addFx(o.x + this.rng.int(-1, 1), o.y + this.rng.int(-1, 1), '∙', 0xa07850, 5);
     f.decal[this.idx(o.x, o.y)] = 3;
-    this.dropAt(o.x, o.y, rollLoot(this.rng, 'urn', this.depth, this.stats.mf));
+    this.dropAt(o.x, o.y, rollLoot(this.rng, 'urn', this.tierHere(), this.stats.mf));
   }
 
   pushBoulder(o: Obj, d: Vec): boolean {
@@ -1357,12 +2189,17 @@ export class Game {
     o.x = tx;
     o.y = ty;
     this.addFx(o.x - d.x, o.y - d.y, '∙', 0x8a8070, 3);
+    this.checkSokoban(pz, o);
+    return true;
+  }
+
+  checkSokoban(pz: Puzzle, moved: Obj): void {
+    const f = this.floor;
     const solved = pz.plates.every((pl) => f.objects.some((b) => b.kind === 'boulder' && b.puzzle === pz.id && b.x === pl.x && b.y === pl.y));
-    const onPlate = pz.plates.some((pl) => pl.x === tx && pl.y === ty);
+    const onPlate = pz.plates.some((pl) => pl.x === moved.x && pl.y === moved.y);
     if (onPlate) this.sfx('plate');
     if (onPlate && !solved) this.log('The scale sinks with a deep, satisfied click.', 0xc0b890);
     if (solved) this.solvePuzzle(pz, 'The last scale sinks. Stone grinds against stone somewhere close.');
-    return true;
   }
 
   resetSokoban(pz: Puzzle): void {
@@ -1429,7 +2266,7 @@ export class Game {
       this.log('The flames gutter and die. Something in the dark answers your mistake.', 0xff5040);
       this.sfx('wrong');
       this.shake = 4;
-      const pool = ['hollow', 'ghoul', 'cultist'].filter((d) => ENEMIES[d].minDepth <= this.depth);
+      const pool = f.kind === 'world' ? ['hollow', 'ghoul'] : ['hollow', 'ghoul', 'cultist'];
       for (let k = 0; k < 2; k++) {
         const e = this.spawnEnemyNear(this.rng.pick(pool), this.player.x, this.player.y, 3, 5);
         if (e) {
@@ -1441,29 +2278,36 @@ export class Game {
     }
   }
 
-  solvePuzzle(pz: Puzzle, text: string): void {
-    pz.solved = true;
-    this.log(text, 0xffe0a0);
-    this.sfx('solved');
-    this.shake = 3;
+  rewardSpot(f: Floor, pz: Puzzle): Vec | null {
     const r = pz.room;
     const c = { x: r.x + (r.w >> 1), y: r.y + (r.h >> 1) };
-    // find a free floor cell near the center for the reward chest
     let best: Vec | null = null;
     let bd = 1e9;
     for (let y = r.y; y < r.y + r.h; y++)
       for (let x = r.x; x < r.x + r.w; x++) {
-        if (this.tileAt(x, y) !== T.FLOOR || this.objAt(x, y) || this.enemyAt(x, y)) continue;
-        if (x === this.player.x && y === this.player.y) continue;
-        if (this.floor.noBoulder[this.idx(x, y)]) continue;
+        const i = y * f.w + x;
+        if (f.tiles[i] !== T.FLOOR || f.noBoulder[i]) continue;
+        if (f.objects.some((o) => o.x === x && o.y === y)) continue;
         const d = (x - c.x) ** 2 + (y - c.y) ** 2;
         if (d < bd) {
           bd = d;
           best = { x, y };
         }
       }
+    return best;
+  }
+
+  solvePuzzle(pz: Puzzle, text: string): void {
+    pz.solved = true;
+    this.setFlag(`pz:${this.floor.key}:${pz.id}`);
+    this.log(text, 0xffe0a0);
+    this.sfx('solved');
+    this.shake = 3;
+    let best = this.rewardSpot(this.floor, pz);
+    if (best && ((best.x === this.player.x && best.y === this.player.y) || this.enemyAt(best.x, best.y))) best = null;
     if (!best) best = { x: this.player.x, y: this.player.y };
-    this.floor.objects.push({ id: 9000 + pz.id, kind: 'chest', x: best.x, y: best.y, loot: pz.reward === 'key' ? 'key' : 'treasure' });
+    const loot = pz.reward === 'key' ? (pz.tool && !this.player.tools.includes(pz.tool) ? `key+${pz.tool}` : 'key') : 'treasure';
+    this.floor.objects.push({ id: 9000 + pz.id, kind: 'chest', x: best.x, y: best.y, loot });
     this.addFx(best.x, best.y - 1, '↓', 0xffd060, 30);
     this.log(pz.reward === 'key' ? 'A chest rises from the floor. It smells of iron.' : 'A reliquary rises from the floor.', 0xffd060);
   }
@@ -1472,9 +2316,9 @@ export class Game {
     for (let t = 0; t < 60; t++) {
       const px = x + this.rng.int(-rmax, rmax), py = y + this.rng.int(-rmax, rmax);
       if (Math.max(Math.abs(px - x), Math.abs(py - y)) < rmin) continue;
-      if (!this.inBounds(px, py) || !this.isWalkTile(this.tileAt(px, py))) continue;
-      if (this.enemyAt(px, py) || this.blockObjAt(px, py) || (px === this.player.x && py === this.player.y)) continue;
-      const e = this.makeEnemy(def, px, py, false);
+      if (!this.inBounds(px, py) || !this.enemyWalk(this.tileAt(px, py))) continue;
+      if (this.enemyAt(px, py) || this.blockObjAt(px, py) || this.npcAt(px, py) || (px === this.player.x && py === this.player.y)) continue;
+      const e = this.makeEnemy(def, px, py, false, this.tierHere());
       this.enemies.push(e);
       this.addFx(px, py, '*', 0xa060ff, 6);
       return e;
@@ -1488,7 +2332,9 @@ export class Game {
   }
 
   addField(x: number, y: number, kind: 'fire' | 'acid', t: number): void {
-    if (!this.inBounds(x, y) || !this.isWalkTile(this.tileAt(x, y))) return;
+    if (!this.inBounds(x, y)) return;
+    const tt = this.tileAt(x, y);
+    if (!(tt === T.FLOOR || tt === T.OPEN || tt === T.BRIDGE)) return;
     const ex = this.fields.find((f) => f.x === x && f.y === y);
     if (ex) {
       ex.kind = kind;
@@ -1613,13 +2459,15 @@ export class Game {
     }
   }
 
-  // ================================================================ helpers for UI
+  // ================================================================ UI helpers
   nearbyDescription(): string[] {
     const p = this.player;
     const out: string[] = [];
     const seen = new Set<Obj>();
     for (const d of [{ x: 0, y: 0 }, ...DIRS8]) {
       const x = p.x + d.x, y = p.y + d.y;
+      const npc = this.npcAt(x, y);
+      if (npc) out.push(`${npc.name}  [E] talk`);
       const o = this.objAt(x, y);
       if (o && !seen.has(o)) {
         seen.add(o);
@@ -1634,20 +2482,32 @@ export class Game {
           case 'plate': out.push('A stone scale'); break;
           case 'message': out.push(`"${o.text}"`); break;
           case 'spikes': out.push('Spike trap'); break;
+          case 'grave': out.push(o.name?.startsWith('WREN') ? "Wren's grave" : o.dug ? 'An open grave' : 'A grave'); break;
+          case 'deco': out.push(cap(o.name ?? '')); break;
         }
       }
       const t = this.tileAt(x, y);
       if (t === T.CRACKED) out.push('A cracked wall');
       if (t === T.LOCKED) out.push(p.keys ? 'Locked door (you have a key)' : 'Locked door (needs a key)');
+      if (t === T.RUBBLE) out.push('Rubble');
+      if (t === T.THORNS) out.push('Black thorns');
+      if (t === T.CHASM) out.push('A sheer drop');
+      if (t === T.PHANTOM) out.push('A phantom bridge');
+      if (t === T.ENTRANCE) out.push('A way down');
     }
-    return out.slice(0, 3);
+    return [...new Set(out)].slice(0, 3);
   }
 
-  actName(): string {
-    return this.floor.name;
+  locationName(): string {
+    if (this.floor.kind === 'dungeon') return `${DUNGEONS[this.floor.dungeon].name} ${'I'.repeat(this.floor.level + 1)}`;
+    return this.regionName || 'The Pale';
   }
 
-  act(): number {
-    return actOf(this.depth);
+  objective(): string {
+    return QUESTS.main.stages[this.quest('main')] ?? '';
+  }
+
+  toolGateName(t: ToolId): string {
+    return TOOL_TILE_NAME[t];
   }
 }

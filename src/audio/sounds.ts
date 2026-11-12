@@ -315,6 +315,55 @@ export const SFX: Record<string, Gen> = {
     [69, 74, 77].forEach((n, i) => bell(b, 0.4 + i * 0.08, mtof(n + 12), 0.8, 0.2, 2, 1));
     return fin(b, 0.55, 0.4);
   },
+  dig: () => {
+    srand(17);
+    const b = buf(0.5);
+    tone(b, 0, 0.12, 0, { wave: 'noise', lp: 900, lpEnd: 300, decay: 0.08, amp: 0.8 });
+    thud(b, 0.02, 140, 0.6, 0.05);
+    for (let k = 0; k < 6; k++) tone(b, 0.1 + rnd() * 0.25, 0.01, 0, { wave: 'noise', lp: 2500, decay: 0.01, amp: 0.25 });
+    return fin(b, 0.55, 0.08);
+  },
+  hook: () => {
+    srand(19);
+    const b = buf(0.6);
+    for (let k = 0; k < 10; k++) bell(b, k * 0.03, 1800 + rnd() * 900, 0.08, 0.15, 3.7, 1.5);
+    bell(b, 0.32, 700, 0.25, 0.4, 2.76, 2.5);
+    thud(b, 0.32, 180, 0.4, 0.03);
+    return fin(b, 0.55, 0.1);
+  },
+  bell: () => {
+    // the silent bell: a huge toll heard from inside your skull
+    const b = buf(5);
+    bell(b, 0, 98, 5, 0.5, 1.4, 3);
+    bell(b, 0, 196.5, 4, 0.25, 2.76, 2);
+    bell(b, 0, 293, 3, 0.12, 1.41, 1.5);
+    tone(b, 0, 3.5, 49, { amp: 0.25, attack: 0.05, release: 1.4 });
+    return fin(b, 0.85, 0.6);
+  },
+  page: () => {
+    const b = buf(0.35);
+    tone(b, 0, 0.2, 0, { wave: 'noise', attack: 0.04, lp: 4000, lpEnd: 1500, amp: 0.4, release: 0.08 });
+    bell(b, 0.12, 1318, 0.25, 0.08, 2, 1);
+    return fin(b, 0.3, 0.1);
+  },
+  talk: () => {
+    const b = buf(0.12);
+    tone(b, 0, 0.05, 220, { wave: 'tri', decay: 0.03, amp: 0.4, sweep: 0.8 });
+    return fin(b, 0.16, 0);
+  },
+  buy: () => {
+    srand(29);
+    const b = buf(0.5);
+    for (let k = 0; k < 5; k++) bell(b, k * 0.04, 2200 + rnd() * 1200, 0.15, 0.15, 3.1, 1);
+    thud(b, 0.2, 260, 0.3, 0.03);
+    return fin(b, 0.4, 0.15);
+  },
+  quest: () => {
+    const b = buf(2.4);
+    [57, 62, 65, 69].forEach((n, i) => bell(b, i * 0.14, mtof(n + 12), 1.4, 0.2, 2, 1));
+    chord(b, 0.55, [50, 57, 62], 1.4, { wave: 'saw', detune: 7, lp: 900, attack: 0.3, release: 0.8, amp: 0.08 });
+    return fin(b, 0.5, 0.45);
+  },
   tallow: () => {
     const b = buf(1.8);
     [81, 86, 89, 93].forEach((n, i) => bell(b, i * 0.05, mtof(n), 1.3, 0.15, 2, 0.8));
@@ -407,6 +456,56 @@ export const MUSIC: Record<string, Gen> = {
     });
     const mel = [71, 72, 71, 69, 67, 66, 64, 63, 64, 67, 71, 76, 75, 72, 71, 0];
     mel.forEach((n, i) => n && organ(b, i * 2 * beat, 1.8 * beat, mtof(n), 0.018, true));
+    return master(b, 0.7, 0.5);
+  },
+
+  // ---------------------------------------------------- town: a broken music box in a dead square
+  town: () => {
+    srand(606);
+    const { b, beat } = loopBuf(54, 32);
+    const L = b.length / SR;
+    tone(b, 0, L, mtof(45), { amp: 0.06, attack: 0.01, release: 0.01 }, true);
+    const prog = [[57, 60, 64], [53, 57, 60], [55, 59, 62], [52, 56, 59]];
+    prog.forEach((c, i) => {
+      const t = i * 8 * beat;
+      chord(b, t, c.map((n) => n - 12), 7.5 * beat, { wave: 'tri', lp: 700, attack: 1.5, release: 2, amp: 0.05 }, true);
+      const mel = [c[2] + 12, c[1] + 12, c[0] + 12, c[1] + 12, c[2] + 12, c[2] + 24, c[1] + 12, 0];
+      mel.forEach((n, k) => n && bell(b, t + k * beat, mtof(n) * (1 + (rnd() - 0.5) * 0.012), 2.2, 0.07, 3.0, 0.6, true));
+    });
+    for (let k = 0; k < 6; k++) tone(b, rnd() * L, 0.6, 0, { wave: 'noise', lp: 600, attack: 0.3, release: 0.5, amp: 0.03 }, true);
+    return master(b, 0.55, 0.42);
+  },
+
+  // ---------------------------------------------------- wilds: wind across dead fields, a distant bell
+  wilds: () => {
+    srand(707);
+    const { b, beat } = loopBuf(48, 32);
+    const L = b.length / SR;
+    for (let k = 0; k < 6; k++) {
+      const t = (k / 6) * L;
+      tone(b, t, L / 4, 0, { wave: 'noise', lp: 300 + rnd() * 500, attack: L / 9, release: L / 8, amp: 0.12 }, true);
+    }
+    tone(b, 0, L, mtof(38), { amp: 0.07, attack: 0.01, release: 0.01, vib: 0.1, vibDepth: 0.01 }, true);
+    tone(b, 0, L, mtof(45), { amp: 0.03, attack: 0.01, release: 0.01, vib: 0.13, vibDepth: 0.01 }, true);
+    for (let k = 0; k < 4; k++) bell(b, k * 8 * beat + 2 * beat, mtof([50, 53, 49, 50][k]), 6, 0.05, 1.41, 1.4, true);
+    for (let k = 0; k < 7; k++) {
+      const n = [62, 65, 64, 62, 60, 58, 57][k];
+      pluck(b, (k * 4 + 1) * beat + rnd() * beat, mtof(n), 3, 0.08, 0.997, true);
+    }
+    return master(b, 0.55, 0.45);
+  },
+
+  // ---------------------------------------------------- abyss: a lullaby at the bottom of everything
+  abyss: () => {
+    srand(808);
+    const { b, beat } = loopBuf(44, 32);
+    const L = b.length / SR;
+    tone(b, 0, L, mtof(28), { amp: 0.16, attack: 0.01, release: 0.01, vib: 0.07, vibDepth: 0.02 }, true);
+    tone(b, 0, L, mtof(29), { amp: 0.06, attack: 0.01, release: 0.01 }, true);
+    const lull = [64, 67, 69, 67, 64, 62, 60, 62, 64, 64, 62, 0, 60, 59, 57, 0];
+    lull.forEach((n, i) => n && tone(b, i * 2 * beat, 1.6 * beat, mtof(n), { wave: 'tri', attack: 0.4, release: 1.2, amp: 0.035, vib: 5, vibDepth: 0.006 }, true));
+    for (let k = 0; k < 8; k++) bell(b, k * 4 * beat, mtof(40 + (k % 2)), 6, 0.04, 1.06, 2, true);
+    for (let k = 0; k < 12; k++) tone(b, rnd() * L, 1.5, 0, { wave: 'noise', lp: 200, attack: 0.6, release: 0.8, amp: 0.05 }, true);
     return master(b, 0.7, 0.5);
   },
 

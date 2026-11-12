@@ -27,7 +27,7 @@ const KEYMAP: Record<string, string> = {
   w: 'up', s: 'down', a: 'left', d: 'right',
   j: 'attack', x: 'attack', k: 'heavy', c: 'heavy',
   ' ': 'roll', q: 'parry', l: 'parry', f: 'flask', e: 'interact',
-  i: 'inv', '\t': 'inv', m: 'map', '?': 'help', h: 'help',
+  i: 'inv', '\t': 'inv', m: 'map', '?': 'help', h: 'help', r: 'tool', b: 'journal',
   '\r': 'enter', '\n': 'enter',
 };
 

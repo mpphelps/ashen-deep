@@ -1,24 +1,44 @@
-// Floor generation: "rooms and mazes", lock-and-key, secret rooms, and verified-solvable puzzles.
+// Dungeon generation: "rooms and mazes", lock-and-key, tool gates, themed rooms, verified puzzles.
 import { RNG } from './rng.ts';
-import { T, DIRS, type Floor, type Room, type Obj, type Puzzle, type Vec, type Spawn } from './types.ts';
-import { ENEMIES, ACT_NAMES, ACT_BOSS, BRAZIER_COLORS, ghostMessage } from './data.ts';
+import { T, DIRS, type Floor, type Room, type Obj, type Puzzle, type Vec, type Spawn, type ToolId } from './types.ts';
+import { ENEMIES, BIOMES, THEMES, BRAZIER_COLORS, ghostMessage, type DecoSpec } from './data.ts';
+import type { FloorPlan, Stash } from './story.ts';
 
-export const MAP_W = 79;
-export const MAP_H = 43;
+export const DUN_W = 79;
+export const DUN_H = 43;
+export const GATE_TILE: Record<ToolId, number> = { spade: T.RUBBLE, lantern: T.THORNS, hook: T.CHASM, bell: T.PHANTOM };
 
-export function actOf(depth: number): number {
-  return Math.floor((depth - 1) / 3) % 3;
+export interface DungeonGenOpts {
+  key: string;
+  dungeon: number;
+  level: number;
+  name: string;
+  biome: string;
+  tier: number;
+  plan: FloorPlan;
+  bossId: string | null;
+  hasTool: (t: ToolId) => boolean;
+  wantStash: (s: Stash) => boolean;
 }
-export function isBossDepth(depth: number): boolean {
-  return depth % 3 === 0;
-}
 
-export function generateFloor(depth: number, seed: number): Floor {
-  for (let a = 0; a < 200; a++) {
-    const f = tryGen(depth, (seed + a * 7919) >>> 0);
+export function generateDungeon(o: DungeonGenOpts, seed: number): Floor {
+  for (let a = 0; a < 300; a++) {
+    const f = tryGen(o, (seed + a * 7919) >>> 0);
     if (f) return f;
   }
   throw new Error('Dungeon generation failed');
+}
+
+export function emptyFloor(key: string, w: number, h: number): Floor {
+  const N = w * h;
+  return {
+    key, kind: 'dungeon', biome: 'crypt', depth: 1, dungeon: -1, level: 0, w, h,
+    tiles: new Uint8Array(N), ground: new Uint8Array(N), seen: new Uint8Array(N), decal: new Uint8Array(N),
+    roomAt: new Int16Array(N).fill(-1), noBoulder: new Uint8Array(N), rooms: [], objects: [], pickups: [], spawns: [],
+    puzzles: [], start: { x: 0, y: 0 }, bonfire: { x: 0, y: 0 }, exitRoom: null, bossRoom: null, bossId: null,
+    lockedDoor: { x: -1, y: -1 }, secretRoom: null, name: '', ambient: 0, fovR: 22, regions: [], entrances: [], npcs: [],
+    liveEnemies: null, needsRespawn: true,
+  };
 }
 
 interface Conn {
@@ -29,28 +49,26 @@ interface Conn {
   leaf: number;
 }
 
-function tryGen(depth: number, seed: number): Floor | null {
+function tryGen(o: DungeonGenOpts, seed: number): Floor | null {
   const rng = new RNG(seed);
-  const W = MAP_W, H = MAP_H;
-  const N = W * H;
-  const tiles = new Uint8Array(N);
+  const W = DUN_W, H = DUN_H, N = W * H;
+  const f = emptyFloor(o.key, W, H);
+  f.kind = 'dungeon';
+  f.biome = o.biome;
+  f.depth = o.tier;
+  f.dungeon = o.dungeon;
+  f.level = o.level;
+  f.name = o.name;
+  const tiles = f.tiles;
   const region = new Int32Array(N).fill(-1);
-  const rooms: Room[] = [];
-  const boss = isBossDepth(depth);
-  const act = actOf(depth);
+  const rooms = f.rooms;
+  const boss = o.plan.boss;
 
   const place = (w: number, h: number, tries: number): Room | null => {
     for (let t = 0; t < tries; t++) {
       const x = 1 + 2 * rng.int(0, (W - 2 - w) >> 1);
       const y = 1 + 2 * rng.int(0, (H - 2 - h) >> 1);
-      let ok = true;
-      for (const r of rooms) {
-        if (x <= r.x + r.w && x + w >= r.x && y <= r.y + r.h && y + h >= r.y) {
-          ok = false;
-          break;
-        }
-      }
-      if (!ok) continue;
+      if (rooms.some((r) => x <= r.x + r.w && x + w >= r.x && y <= r.y + r.h && y + h >= r.y)) continue;
       const room: Room = { id: rooms.length, x, y, w, h, kind: 'normal' };
       for (let yy = y; yy < y + h; yy++)
         for (let xx = x; xx < x + w; xx++) {
@@ -64,15 +82,13 @@ function tryGen(depth: number, seed: number): Floor | null {
   };
 
   const bigIdx: number[] = [];
-  if (boss) {
-    if (!place(17, 13, 200)) return null;
-  }
-  for (let k = 0; k < 2; k++) {
+  if (boss && !place(17, 13, 200)) return null;
+  for (let k = 0; k < 3; k++) {
     const r = place(rng.pick([9, 11]), rng.pick([7, 9]), 80);
     if (r) bigIdx.push(r.id);
   }
-  for (let t = 0; t < 400 && rooms.length < 14; t++) place(rng.pick([5, 5, 7, 7, 9]), rng.pick([5, 5, 7]), 1);
-  if (rooms.length < 7) return null;
+  for (let t = 0; t < 400 && rooms.length < 16; t++) place(rng.pick([5, 5, 7, 7, 9]), rng.pick([5, 5, 7]), 1);
+  if (rooms.length < 9 || bigIdx.length < 2) return null;
 
   // ---- maze fill
   let regionCount = rooms.length;
@@ -111,30 +127,47 @@ function tryGen(depth: number, seed: number): Floor | null {
     }
   }
 
-  // ---- special rooms
-  const roomCenter = (r: Room): Vec => ({ x: r.x + (r.w >> 1), y: r.y + (r.h >> 1) });
+  // ---- special rooms (leaves have exactly one way in)
+  const center = (r: Room): Vec => ({ x: r.x + (r.w >> 1), y: r.y + (r.h >> 1) });
   const bossIdx = boss ? 0 : -1;
   const small = rooms.filter((r) => r.id !== bossIdx && !bigIdx.includes(r.id));
-  if (small.length < 3) return null;
+  if (small.length < 5) return null;
   const startRoom = rng.pick(small);
-  const sc = roomCenter(startRoom);
+  const sc = center(startRoom);
+  const dist2 = (r: Room) => (center(r).x - sc.x) ** 2 + (center(r).y - sc.y) ** 2;
   let exitRoom: Room;
   if (boss) exitRoom = rooms[0];
   else {
-    const cands = small.filter((r) => r !== startRoom);
-    cands.sort((a, b) => {
-      const ca = roomCenter(a), cb = roomCenter(b);
-      return (cb.x - sc.x) ** 2 + (cb.y - sc.y) ** 2 - ((ca.x - sc.x) ** 2 + (ca.y - sc.y) ** 2);
-    });
+    const cands = small.filter((r) => r !== startRoom).sort((a, b) => dist2(b) - dist2(a));
     exitRoom = cands[rng.int(0, Math.min(1, cands.length - 1))];
   }
-  let secretRoom: Room | null = null;
-  if (rng.chance(0.7)) {
-    const cands = small.filter((r) => r !== startRoom && r !== exitRoom && r.w * r.h <= 35);
-    if (cands.length) secretRoom = rng.pick(cands);
+  const leafKind = new Map<number, number>(); // room id -> connector tile
+  leafKind.set(exitRoom.id, T.LOCKED);
+  let keyVault: Room | null = null;
+  if (o.plan.keyGate) {
+    keyVault = rooms[bigIdx[0]];
+    leafKind.set(keyVault.id, GATE_TILE[o.plan.keyGate]);
   }
-  const exitIdx = exitRoom.id, secretIdx = secretRoom ? secretRoom.id : -1;
-  const isLeaf = (r: number) => r === exitIdx || r === secretIdx;
+  const used = new Set<number>([startRoom.id, exitRoom.id, ...(keyVault ? [keyVault.id] : [])]);
+  const vaults: { room: Room; tool: ToolId }[] = [];
+  for (const tool of o.plan.optional) {
+    if (vaults.length >= 2 || !rng.chance(0.75)) continue;
+    const cands = small.filter((r) => !used.has(r.id) && r.w * r.h <= 35);
+    if (!cands.length) break;
+    const r = rng.pick(cands);
+    used.add(r.id);
+    vaults.push({ room: r, tool });
+    leafKind.set(r.id, GATE_TILE[tool]);
+  }
+  let secretRoom: Room | null = null;
+  if (rng.chance(0.6)) {
+    const cands = small.filter((r) => !used.has(r.id) && r.w * r.h <= 35);
+    if (cands.length) {
+      secretRoom = rng.pick(cands);
+      used.add(secretRoom.id);
+      leafKind.set(secretRoom.id, T.CRACKED);
+    }
+  }
 
   // ---- connectors + spanning tree
   const conns: Conn[] = [];
@@ -162,16 +195,15 @@ function tryGen(depth: number, seed: number): Floor | null {
   };
   const leafDone = new Set<number>();
   const accepted: Conn[] = [];
-  const nearAccepted = (c: Conn) => accepted.some((o) => Math.abs(o.x - c.x) <= 2 && Math.abs(o.y - c.y) <= 2);
+  const nearAccepted = (c: Conn) => accepted.some((q) => Math.abs(q.x - c.x) <= 2 && Math.abs(q.y - c.y) <= 2);
   for (const c of conns) {
-    const la = isLeaf(c.a), lb = isLeaf(c.b);
+    const la = leafKind.has(c.a), lb = leafKind.has(c.b);
     if (la && lb) continue;
     if (la || lb) {
       const leaf = la ? c.a : c.b;
       if (leafDone.has(leaf)) continue;
-      // leaves attach to corridors, not other rooms, so the locked door reads clearly
       const other = la ? c.b : c.a;
-      if (other < rooms.length && rng.chance(0.7)) continue;
+      if (other < rooms.length && rng.chance(0.7)) continue; // prefer corridors
       leafDone.add(leaf);
       parent[find(c.a)] = find(c.b);
       c.leaf = leaf;
@@ -185,26 +217,24 @@ function tryGen(depth: number, seed: number): Floor | null {
   }
   const root = find(0);
   for (let r = 1; r < regionCount; r++) if (find(r) !== root) return null;
-  if (!leafDone.has(exitIdx)) return null;
+  for (const id of leafKind.keys()) if (!leafDone.has(id)) return null;
 
-  let lockedDoor: Vec = { x: 0, y: 0 };
   for (const c of accepted) {
     const i = c.y * W + c.x;
-    if (c.leaf === exitIdx) {
-      tiles[i] = T.LOCKED;
-      lockedDoor = { x: c.x, y: c.y };
-    } else if (c.leaf === secretIdx && secretIdx >= 0) tiles[i] = T.CRACKED;
-    else if (c.a < rooms.length || c.b < rooms.length) tiles[i] = T.DOOR;
+    if (c.leaf >= 0) {
+      tiles[i] = leafKind.get(c.leaf)!;
+      if (c.leaf === exitRoom.id) f.lockedDoor = { x: c.x, y: c.y };
+    } else if (c.a < rooms.length || c.b < rooms.length) tiles[i] = T.DOOR;
     else tiles[i] = T.FLOOR;
   }
 
-  // ---- prune dead ends (keep a few for maze flavor)
-  const roomAt = new Int16Array(N).fill(-1);
+  // ---- prune dead ends (keep a few for maze flavor); special connectors are never pruned
+  const roomAt = f.roomAt;
   for (const r of rooms)
     for (let yy = r.y; yy < r.y + r.h; yy++) for (let xx = r.x; xx < r.x + r.w; xx++) roomAt[yy * W + xx] = r.id;
   const deadEnd = (i: number): boolean => {
     const t = tiles[i];
-    if (t === T.WALL || t === T.LOCKED || t === T.CRACKED || roomAt[i] >= 0) return false;
+    if ((t !== T.FLOOR && t !== T.DOOR) || roomAt[i] >= 0) return false;
     let n = 0;
     if (tiles[i - 1] !== T.WALL) n++;
     if (tiles[i + 1] !== T.WALL) n++;
@@ -225,10 +255,10 @@ function tryGen(depth: number, seed: number): Floor | null {
     }
   }
 
-  const noBoulder = new Uint8Array(N);
+  const noBoulder = f.noBoulder;
   for (let i = W; i < N - W; i++) {
     const t = tiles[i];
-    if (t === T.DOOR || t === T.LOCKED || t === T.CRACKED || (t === T.FLOOR && roomAt[i] < 0)) {
+    if (t !== T.WALL && roomAt[i] < 0) {
       for (const d of DIRS) {
         const j = i + d.y * W + d.x;
         if (roomAt[j] >= 0) noBoulder[j] = 1;
@@ -239,61 +269,66 @@ function tryGen(depth: number, seed: number): Floor | null {
   startRoom.kind = 'start';
   exitRoom.kind = boss ? 'boss' : 'exit';
   if (secretRoom) secretRoom.kind = 'secret';
+  if (keyVault) keyVault.kind = 'vault';
+  for (const v of vaults) v.room.kind = 'vault';
+  f.exitRoom = exitRoom;
+  f.bossRoom = boss ? exitRoom : null;
+  f.bossId = o.bossId;
+  f.secretRoom = secretRoom;
+  f.start = { x: sc.x, y: sc.y + 1 };
+  f.bonfire = sc;
 
-  const f: Floor = {
-    depth, act, w: W, h: H, tiles, seen: new Uint8Array(N), decal: new Uint8Array(N), roomAt, noBoulder,
-    rooms, objects: [], pickups: [], spawns: [], puzzles: [],
-    start: { x: sc.x, y: sc.y + 1 }, bonfire: sc, exitRoom, bossRoom: boss ? exitRoom : null,
-    bossId: boss ? ACT_BOSS[act] : null, lockedDoor, secretRoom, name: ACT_NAMES[act],
-  };
   let oid = 1;
-  const addObj = (o: Omit<Obj, 'id'>): Obj => {
-    const ob = { id: oid++, ...o } as Obj;
-    f.objects.push(ob);
-    return ob;
+  const addObj: AddObj = (ob) => {
+    const n = { id: oid++, ...ob } as Obj;
+    f.objects.push(n);
+    return n;
   };
-  const objAt = (x: number, y: number) => f.objects.find((o) => o.x === x && o.y === y);
+  const objAt = (x: number, y: number) => f.objects.find((q) => q.x === x && q.y === y);
   const isFreeFloor = (x: number, y: number) =>
     tiles[y * W + x] === T.FLOOR && !objAt(x, y) && !(x === f.start.x && y === f.start.y);
 
   addObj({ kind: 'bonfire', x: sc.x, y: sc.y });
+  tiles[(sc.y - 1) * W + sc.x] = T.UPSTAIRS;
   if (!boss) {
-    const ec = roomCenter(exitRoom);
+    const ec = center(exitRoom);
     tiles[ec.y * W + ec.x] = T.STAIRS;
   }
 
-  // ---- puzzles
-  const candidates = rooms
-    .filter((r) => r.kind === 'normal')
-    .sort((a, b) => b.w * b.h - a.w * a.h);
+  // ---- puzzles: the key puzzle (in the key vault when gated), then an optional treasure puzzle
   const kinds = rng.shuffle(['sokoban', 'lights', 'braziers'] as const);
-  let keyPlaced = false;
-  let puzzleCount = 0;
-  const wantTreasurePuzzle = rng.chance(0.75);
-  for (const room of candidates) {
-    if (puzzleCount >= (wantTreasurePuzzle ? 2 : 1)) break;
-    const reward = keyPlaced ? 'treasure' : 'key';
+  let kindIdx = 0;
+  const tryPuzzle = (room: Room, reward: 'key' | 'treasure', tool?: ToolId): boolean => {
     for (let k = 0; k < kinds.length; k++) {
-      const kind = kinds[(puzzleCount + k) % kinds.length];
+      const kind = kinds[(kindIdx + k) % kinds.length];
       const pz: Puzzle = {
         id: f.puzzles.length, kind, room, reward, solved: false, plates: [], boulderStart: [], n: 0,
-        order: [], progress: 0, riddle: [],
+        order: [], progress: 0, riddle: [], tool,
       };
-      let ok = false;
-      if (kind === 'sokoban') ok = genSokoban(f, rng, pz, addObj);
-      else if (kind === 'lights') ok = genLights(f, rng, pz, addObj);
-      else ok = genBraziers(f, rng, pz, addObj);
+      const ok = kind === 'sokoban' ? genSokoban(f, rng, pz, addObj) : kind === 'lights' ? genLights(f, rng, pz, addObj) : genBraziers(f, rng, pz, addObj);
       if (ok) {
         f.puzzles.push(pz);
-        room.kind = 'puzzle';
-        puzzleCount++;
-        if (reward === 'key') keyPlaced = true;
-        break;
+        if (room.kind === 'normal') room.kind = 'puzzle';
+        kindIdx++;
+        return true;
       }
     }
+    return false;
+  };
+  const toolReward = o.plan.toolReward && !o.hasTool(o.plan.toolReward) ? o.plan.toolReward : undefined;
+  const normalBig = () => rooms.filter((r) => r.kind === 'normal').sort((a, b) => b.w * b.h - a.w * a.h);
+  let keyPlaced = false;
+  if (keyVault) {
+    keyPlaced = tryPuzzle(keyVault, 'key', toolReward);
+    if (!keyPlaced) {
+      const c = center(keyVault);
+      addObj({ kind: 'chest', x: c.x, y: c.y, loot: 'key' });
+      keyPlaced = true;
+    }
+  } else {
+    for (const room of normalBig().slice(0, 4)) if ((keyPlaced = tryPuzzle(room, 'key', toolReward))) break;
   }
-
-  const normalRooms = () => rooms.filter((r) => r.kind === 'normal');
+  const spawns: Spawn[] = [];
   const randomCellIn = (r: Room, avoidNoBoulder = true): Vec | null => {
     for (let t = 0; t < 40; t++) {
       const x = rng.int(r.x, r.x + r.w - 1), y = rng.int(r.y, r.y + r.h - 1);
@@ -302,36 +337,34 @@ function tryGen(depth: number, seed: number): Floor | null {
     }
     return null;
   };
-
-  const spawns: Spawn[] = [];
   if (!keyPlaced) {
-    // fallback: a guarded key chest
-    const nr = normalRooms();
+    const nr = rooms.filter((r) => r.kind === 'normal');
     if (!nr.length) return null;
     const r = rng.pick(nr);
-    const c = roomCenter(r);
+    const c = center(r);
     if (!isFreeFloor(c.x, c.y)) return null;
-    addObj({ kind: 'chest', x: c.x, y: c.y, loot: 'key' });
-    const pool = enemyPool(act, depth);
-    const guard = randomCellIn(r);
-    if (guard) spawns.push({ def: rng.weighted(pool), x: guard.x, y: guard.y, elite: true });
+    addObj({ kind: 'chest', x: c.x, y: c.y, loot: toolReward ? `key+${toolReward}` : 'key' });
+    const g = randomCellIn(r);
+    if (g) spawns.push({ def: rng.weighted(BIOMES[o.biome].pool), x: g.x, y: g.y, elite: true, tier: o.tier });
   }
+  if (rng.chance(0.7)) for (const room of normalBig().slice(0, 3)) if (tryPuzzle(room, 'treasure')) break;
 
-  // ---- secret room loot
-  if (secretRoom) {
-    const c = roomCenter(secretRoom);
+  // ---- vaults: secret room + tool-gated treasure rooms
+  for (const vr of [...(secretRoom ? [secretRoom] : []), ...vaults.map((v) => v.room)]) {
+    const c = center(vr);
     addObj({ kind: 'chest', x: c.x, y: c.y, loot: 'treasure' });
     for (let k = 0; k < 2; k++) {
-      const p = randomCellIn(secretRoom);
+      const p = randomCellIn(vr);
       if (p) addObj({ kind: 'urn', x: p.x, y: p.y });
     }
-    if (rng.chance(0.6)) {
-      const p = randomCellIn(secretRoom);
+    if (rng.chance(0.4)) {
+      const p = randomCellIn(vr);
       if (p) f.pickups.push({ x: p.x, y: p.y, kind: 'tallow' });
     }
-    // a hint from the dead near the cracked wall
+  }
+  if (secretRoom) {
     for (const c2 of accepted) {
-      if (c2.leaf !== secretIdx) continue;
+      if (c2.leaf !== secretRoom.id) continue;
       for (const d of DIRS) {
         const x = c2.x + d.x, y = c2.y + d.y;
         if (roomAt[y * W + x] < 0 && isFreeFloor(x, y) && rng.chance(0.75)) {
@@ -342,10 +375,28 @@ function tryGen(depth: number, seed: number): Floor | null {
     }
   }
 
+  // ---- themed rooms, decorations, story stashes
+  const themeable = rng.shuffle(rooms.filter((r) => r.kind === 'normal'));
+  const stash = o.plan.stash.filter(o.wantStash);
+  const themes: string[] = [];
+  for (const s of stash) if (!themes.includes(s.theme)) themes.push(s.theme);
+  for (const t of rng.shuffle(BIOMES[o.biome].themes.slice())) if (!themes.includes(t)) themes.push(t);
+  // required themes go to the roomiest rooms
+  themeable.sort((a, b) => b.w * b.h - a.w * a.h);
+  themes.forEach((th, i) => {
+    if (i < themeable.length) themeable[i].theme = th;
+  });
+  for (const r of rooms) if (r.theme) decorate(f, rng, r, addObj);
+  for (const s of stash) {
+    const r = rooms.find((rm) => rm.theme === s.theme) ?? rng.pick(rooms.filter((rm) => rm.kind === 'normal'));
+    const p = r && randomCellIn(r);
+    if (p) f.pickups.push({ x: p.x, y: p.y, kind: s.kind, id: s.id });
+  }
+
   // ---- chests, urns, messages, traps
   const chestCount = 1 + (rng.chance(0.5) ? 1 : 0);
   for (let k = 0; k < chestCount; k++) {
-    const nr = normalRooms();
+    const nr = rooms.filter((r) => r.kind === 'normal');
     if (!nr.length) break;
     const p = randomCellIn(rng.pick(nr));
     if (p) addObj({ kind: 'chest', x: p.x, y: p.y, loot: 'normal' });
@@ -361,59 +412,55 @@ function tryGen(depth: number, seed: number): Floor | null {
       for (const d of DIRS) if (tiles[i + d.y * W + d.x] !== T.WALL) n++;
       if (n === 1) deadEnds.push({ x, y });
     }
-  const urnCount = rng.int(6, 10);
+  const urnCount = rng.int(5, 9);
   for (let k = 0; k < urnCount; k++) {
     if (deadEnds.length && rng.chance(0.35)) {
       const p = rng.pick(deadEnds);
       if (isFreeFloor(p.x, p.y)) addObj({ kind: 'urn', x: p.x, y: p.y });
       continue;
     }
-    const nr = rooms.filter((r) => r.kind === 'normal' || r.kind === 'start' || r.kind === 'exit');
+    const nr = rooms.filter((r) => r.kind === 'normal' || r.kind === 'exit');
+    if (!nr.length) break;
     const r = rng.pick(nr);
-    // urns hug walls
     for (let t = 0; t < 20; t++) {
       const x = rng.pick([r.x, r.x + r.w - 1, rng.int(r.x, r.x + r.w - 1)]);
       const y = rng.pick([r.y, r.y + r.h - 1, rng.int(r.y, r.y + r.h - 1)]);
       if (noBoulder[y * W + x] || !isFreeFloor(x, y)) continue;
-      if (Math.abs(x - sc.x) <= 1 && Math.abs(y - sc.y) <= 1) continue;
       addObj({ kind: 'urn', x, y });
       break;
     }
   }
-  const msgCount = rng.int(3, 5);
+  const msgCount = rng.int(2, 4);
   for (let k = 0; k < msgCount; k++) {
     const p = rng.chance(0.5) && corridorCells.length ? rng.pick(corridorCells) : randomCellIn(rng.pick(rooms), false);
     if (p && isFreeFloor(p.x, p.y)) addObj({ kind: 'message', x: p.x, y: p.y, text: ghostMessage(rng) });
   }
-  if (depth >= 2) {
-    const n = rng.int(3, 7);
-    for (let k = 0; k < n && corridorCells.length; k++) {
-      const p = rng.pick(corridorCells);
-      if (isFreeFloor(p.x, p.y) && (p.x - sc.x) ** 2 + (p.y - sc.y) ** 2 > 36)
-        addObj({ kind: 'spikes', x: p.x, y: p.y, off: rng.int(0, 79) });
-    }
+  const traps = rng.int(2, 6);
+  for (let k = 0; k < traps && corridorCells.length; k++) {
+    const p = rng.pick(corridorCells);
+    if (isFreeFloor(p.x, p.y) && (p.x - sc.x) ** 2 + (p.y - sc.y) ** 2 > 36) addObj({ kind: 'spikes', x: p.x, y: p.y, off: rng.int(0, 79) });
   }
 
   // ---- enemies
-  const pool = enemyPool(act, depth);
-  const total = Math.min(28, 6 + Math.round(depth * 1.6));
+  const pool = BIOMES[o.biome].pool;
+  const total = Math.min(26, 8 + Math.round(o.tier * 1.5));
   let elites = 0;
   const occupied = new Set<number>();
   const farFromStart = (p: Vec) => (p.x - sc.x) ** 2 + (p.y - sc.y) ** 2 > 100;
   let guard = 0;
-  while (spawns.length < total && guard++ < 400) {
+  while (spawns.length < total && guard++ < 500) {
     const def = rng.weighted(pool);
     const ed = ENEMIES[def];
     let at: Vec | null;
     if (rng.chance(0.25) && corridorCells.length) at = rng.pick(corridorCells);
     else {
-      const rs = rooms.filter((r) => r.kind !== 'start' && r.kind !== 'boss' && r.kind !== 'secret');
+      const rs = rooms.filter((r) => r.kind !== 'start' && r.kind !== 'boss');
       at = randomCellIn(rng.pick(rs), false);
     }
     if (!at || !isFreeFloor(at.x, at.y) || !farFromStart(at) || occupied.has(at.y * W + at.x)) continue;
-    const elite = depth >= 2 && elites < 2 && !ed.pack && rng.chance(0.09);
+    const elite = elites < 2 && !ed.pack && rng.chance(0.09);
     if (elite) elites++;
-    spawns.push({ def, x: at.x, y: at.y, elite });
+    spawns.push({ def, x: at.x, y: at.y, elite, tier: o.tier });
     occupied.add(at.y * W + at.x);
     if (ed.pack) {
       const extra = rng.int(ed.pack[0], ed.pack[1]) - 1;
@@ -422,7 +469,7 @@ function tryGen(depth: number, seed: number): Floor | null {
           const x = at.x + rng.int(-2, 2), y = at.y + rng.int(-2, 2);
           if (x < 1 || y < 1 || x >= W - 1 || y >= H - 1) continue;
           if (!isFreeFloor(x, y) || occupied.has(y * W + x)) continue;
-          spawns.push({ def, x, y, elite: false });
+          spawns.push({ def, x, y, elite: false, tier: o.tier });
           occupied.add(y * W + x);
           break;
         }
@@ -433,25 +480,84 @@ function tryGen(depth: number, seed: number): Floor | null {
   return f;
 }
 
-function enemyPool(act: number, depth: number): [string, number][] {
-  const pool: [string, number][] = [];
-  for (const d of Object.values(ENEMIES)) {
-    if (d.id === 'maggot' && act !== 1) continue;
-    if (d.acts.includes(act) && d.minDepth <= depth) pool.push([d.id, d.weight]);
+/** Scatter a theme's decorations without ever cutting the room in two. */
+export function decorate(f: Floor, rng: RNG, r: Room, addObj: AddObj): void {
+  const th = THEMES[r.theme!];
+  if (!th) return;
+  const W = f.w;
+  const free = (x: number, y: number) =>
+    f.tiles[y * W + x] === T.FLOOR && !f.noBoulder[y * W + x] && !f.objects.some((q) => q.x === x && q.y === y);
+  const connected = (): boolean => {
+    // every walkable, unblocked room cell must be reachable from every other
+    const cells: number[] = [];
+    for (let y = r.y; y < r.y + r.h; y++)
+      for (let x = r.x; x < r.x + r.w; x++) {
+        const i = y * W + x;
+        if (f.tiles[i] === T.WALL) continue;
+        if (f.objects.some((q) => q.x === x && q.y === y && (q.kind !== 'deco' || q.block) && q.kind !== 'rune' && q.kind !== 'plate' && q.kind !== 'message')) continue;
+        cells.push(i);
+      }
+    if (!cells.length) return true;
+    const set = new Set(cells);
+    const seen = new Set([cells[0]]);
+    const st = [cells[0]];
+    while (st.length) {
+      const c = st.pop()!;
+      for (const d of [-1, 1, -W, W]) if (set.has(c + d) && !seen.has(c + d)) {
+        seen.add(c + d);
+        st.push(c + d);
+      }
+    }
+    return seen.size === set.size;
+  };
+  for (const spec of th.deco) {
+    const n = rng.int(spec.n[0], spec.n[1]);
+    const cells = candidateCells(r, spec, rng);
+    let placed = 0;
+    for (const c of cells) {
+      if (placed >= n) break;
+      if (!free(c.x, c.y)) continue;
+      const ob = addObj({ kind: 'deco', x: c.x, y: c.y, glyph: spec.glyph, color: spec.color, name: spec.name, block: spec.block });
+      if (spec.block && !connected()) {
+        f.objects.splice(f.objects.indexOf(ob), 1);
+        continue;
+      }
+      placed++;
+    }
   }
-  return pool;
+  if (th.decal) {
+    for (let k = 0; k < 6; k++) {
+      const x = rng.int(r.x, r.x + r.w - 1), y = rng.int(r.y, r.y + r.h - 1);
+      if (f.tiles[y * W + x] === T.FLOOR) f.decal[y * W + x] = th.decal;
+    }
+  }
 }
 
-type AddObj = (o: Omit<Obj, 'id'>) => Obj;
+function candidateCells(r: Room, spec: DecoSpec, rng: RNG): Vec[] {
+  const out: Vec[] = [];
+  const cx = r.x + (r.w >> 1), cy = r.y + (r.h >> 1);
+  for (let y = r.y; y < r.y + r.h; y++)
+    for (let x = r.x; x < r.x + r.w; x++) {
+      const edge = x === r.x || y === r.y || x === r.x + r.w - 1 || y === r.y + r.h - 1;
+      if (spec.at === 'wall' && !edge) continue;
+      if (spec.at === 'rows' && (edge || (y - r.y) % 2 === 0 || x === cx)) continue;
+      if (spec.at === 'center' && (Math.abs(x - cx) > 2 || Math.abs(y - cy) > 1)) continue;
+      out.push({ x, y });
+    }
+  if (spec.at === 'center') return out.sort((a, b) => Math.abs(a.x - cx) + Math.abs(a.y - cy) - (Math.abs(b.x - cx) + Math.abs(b.y - cy)));
+  return rng.shuffle(out);
+}
 
-function interiorCells(r: Room): Vec[] {
+export type AddObj = (o: Omit<Obj, 'id'>) => Obj;
+
+export function interiorCells(r: Room): Vec[] {
   const out: Vec[] = [];
   for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) out.push({ x, y });
   return out;
 }
 
 // ------------------------------------------------------------------ sokoban
-function genSokoban(f: Floor, rng: RNG, pz: Puzzle, addObj: AddObj): boolean {
+export function genSokoban(f: Floor, rng: RNG, pz: Puzzle, addObj: AddObj): boolean {
   const r = pz.room;
   if (r.w < 7 || r.h < 5) return false;
   const lw = r.w, lh = r.h, n = lw * lh;
@@ -680,7 +786,7 @@ export function solveSokoban(
 }
 
 // ------------------------------------------------------------------ lights out
-function genLights(f: Floor, rng: RNG, pz: Puzzle, addObj: AddObj): boolean {
+export function genLights(f: Floor, rng: RNG, pz: Puzzle, addObj: AddObj): boolean {
   const r = pz.room;
   const n = f.depth >= 4 && r.w >= 9 && r.h >= 9 ? 4 : 3;
   if (r.w < 2 * n + 1 || r.h < 2 * n + 1) return false;
@@ -721,7 +827,7 @@ function genLights(f: Floor, rng: RNG, pz: Puzzle, addObj: AddObj): boolean {
 }
 
 // ------------------------------------------------------------------ braziers
-function genBraziers(f: Floor, rng: RNG, pz: Puzzle, addObj: AddObj): boolean {
+export function genBraziers(f: Floor, rng: RNG, pz: Puzzle, addObj: AddObj): boolean {
   const r = pz.room;
   if (r.w < 5 || r.h < 5) return false;
   const k = f.depth <= 3 ? 3 : f.depth <= 6 ? 4 : 5;

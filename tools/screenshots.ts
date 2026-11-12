@@ -8,8 +8,8 @@ import { Game } from '../src/game.ts';
 import { Screen } from '../src/term.ts';
 import { render } from '../src/render.ts';
 import { makeItem, makeUnique } from '../src/loot.ts';
-import { MAP_W } from '../src/dungeon.ts';
 import { T, DIRS } from '../src/types.ts';
+import { NPCS } from '../src/story.ts';
 
 const OUT = path.resolve('docs/screenshots');
 fs.mkdirSync(OUT, { recursive: true });
@@ -67,194 +67,176 @@ function game(seed: number): Game {
   const g = new Game(seed);
   g.saveEnabled = false;
   g.newGame();
+  g.mode = 'play';
+  g.modal = null;
   g.msgs = [];
   return g;
 }
 function tick(g: Game, n: number): void {
   for (let i = 0; i < n; i++) g.update();
 }
-function reveal(g: Game, cells: { x: number; y: number }[]): void {
+/** Stand at many walkable cells near the player to reveal the surroundings (maps, corridors). */
+function explore(g: Game, steps: number, every = 3): void {
   const p = g.player;
   const ox = p.x, oy = p.y;
-  for (const c of cells) {
-    p.x = c.x;
-    p.y = c.y;
+  g.computeDist();
+  const W = g.floor.w;
+  for (let i = 0; i < g.dist.length; i++) {
+    if (g.dist[i] > steps || i % every) continue;
+    p.x = i % W;
+    p.y = (i / W) | 0;
     g.updateFov();
   }
   p.x = ox;
   p.y = oy;
   g.updateFov();
 }
-/** Walk outward from the player and reveal everything within `steps` (shows the maze, not just rooms). */
-function explore(g: Game, steps: number): void {
-  g.computeDist();
-  const cells: { x: number; y: number }[] = [];
-  for (let i = 0; i < g.dist.length; i++) if (g.dist[i] <= steps && i % 3 === 0) cells.push({ x: i % MAP_W, y: (i / MAP_W) | 0 });
-  reveal(g, cells);
-}
-function roomCells(g: Game) {
-  return g.floor.rooms.map((r) => ({ x: r.x + (r.w >> 1), y: r.y + (r.h >> 1) }));
-}
 
 // ------------------------------------------------------------------ 1. title
 {
   const g = new Game(1);
   g.saveEnabled = false;
-  for (let i = 0; i < 260; i++) g.update();
+  tick(g, 260);
   snap(g, '1-title');
 }
 
-// ------------------------------------------------------------------ 2. exploring the ossuary
+// ------------------------------------------------------------------ 2. Hollowmere, and the welcome you get
 {
   const g = game(4242);
-  const f = g.floor;
-  // walk the corridors: reveal every room and some maze around the start
-  explore(g, 70);
-  g.enemies = g.enemies.filter((e) => Math.abs(e.x - g.player.x) > 6 || Math.abs(e.y - g.player.y) > 6);
-  for (let i = 0; i < f.decal.length; i += 97) if (f.tiles[i] === T.FLOOR && g.vis[i] > 0) f.decal[i] = 1;
-  g.player.ashes = 214;
-  g.log('You wake in the cold. Something took your name. Go down, and take it back.', 0xd0a060);
-  g.log('Scrawled in blood: "Strike from the dark. They never see it coming."', 0xe0a050);
-  g.log('Found: Grief Fang (Rare Kris)', 0xffe04a);
-  tick(g, 2);
+  g.enterLocation('world', { x: 47, y: 55 });
+  g.player.face = { x: 0, y: -1 };
+  explore(g, 14, 2);
   g.banner = null;
-  snap(g, '2-explore');
+  g.msgs = [];
+  g.log('You crawl out of the Pit. The town of Hollowmere lies south.', 0xd0a060);
+  g.log('Scrawled in blood: "Welcome home, Digger"', 0xe0a050);
+  tick(g, 3);
+  g.talkTo(NPCS.sallow);
+  g.dialog!.page = 1;
+  snap(g, '2-hollowmere');
 }
 
-// ------------------------------------------------------------------ 3. combat
+// ------------------------------------------------------------------ 3. the cemetery
+{
+  const g = game(4242);
+  g.player.tools = ['spade'];
+  g.player.tool = 0;
+  g.enterLocation('world', { x: 61, y: 14 });
+  g.player.face = { x: 0, y: -1 };
+  explore(g, 22, 2);
+  const tomas = g.enemies.find((e) => e.name === 'Little Tomas');
+  if (tomas) {
+    g.target = tomas;
+    g.targetT = 999;
+  }
+  for (const e of g.enemies) if (Math.abs(e.x - 61) < 14 && Math.abs(e.y - 12) < 8) { e.aware = true; e.state = 'chase'; }
+  g.banner = null;
+  g.log('Harrow: "He\'ll be by the old yew. He always liked the yew."', 0x8ab070);
+  g.log('Rubble. Your spade could shift it. [R]', 0xb0a080);
+  tick(g, 6);
+  g.banner = null;
+  snap(g, '3-cemetery');
+}
+
+// ------------------------------------------------------------------ 4. the Rotwood Hollow
 {
   const g = game(31);
-  g.enterFloor(5);
-  g.msgs = [];
+  g.player.tools = ['spade', 'lantern'];
+  g.player.tool = 1;
+  g.enterLocation('d1f0');
   const f = g.floor;
-  const central = (rm: { x: number; y: number; w: number; h: number }) => Math.abs(rm.x + rm.w / 2 - 39) + Math.abs(rm.y + rm.h / 2 - 21);
-  const r = f.rooms.filter((rm) => rm.kind !== 'boss' && rm.kind !== 'start' && rm.w >= 9 && rm.h >= 7).sort((a, b) => central(a) - central(b))[0];
+  const r = f.rooms.filter((rm) => rm.theme && rm.w >= 7).sort((a, b) => b.w * b.h - a.w * a.h)[0];
   const p = g.player;
   p.x = r.x + 2;
   p.y = r.y + (r.h >> 1);
-  f.objects = f.objects.filter((o) => !g.inRoom(o.x, o.y, r));
+  while (g.blockObjAt(p.x, p.y)) p.x++;
   g.enemies = [];
   const mk = (def: string, dx: number, dy: number, elite = false) => {
-    const e = g.makeEnemy(def, p.x + dx, p.y + dy, elite);
+    if (g.blockObjAt(p.x + dx, p.y + dy) || g.isOpaque(p.x + dx, p.y + dy)) return;
+    const e = g.makeEnemy(def, p.x + dx, p.y + dy, elite, 4);
     e.state = 'chase';
     e.aware = true;
     e.cd = 0;
     g.enemies.push(e);
-    return e;
   };
-  const ghoul = mk('ghoul', 1, 0);
-  mk('flagellant', 0, 1, true);
-  mk('cultist', 4, -1);
-  mk('archer', 4, 2);
-  explore(g, 90);
-  for (let i = 0; i < f.decal.length; i += 53) if (f.tiles[i] === T.FLOOR && f.seen[i]) f.decal[i] = 1;
-  f.decal[(p.y + 1) * MAP_W + p.x - 1] = 2;
-  p.hp = 128;
-  p.ashes = 1460;
-  p.level = 6;
-  p.eq.weapon = makeItem(g.rng, 5, 2, 'weapon', 'axe');
+  mk('hound', 1, 0);
+  mk('hound', 1, 1);
+  mk('ghoul', 3, -1, true);
+  mk('bloated', 4, 1);
+  explore(g, 60);
+  p.level = 9;
+  p.eq.weapon = makeUnique(g.rng, 'lament', 5);
   g.recalc();
   p.face = { x: 1, y: 0 };
-  tick(g, 6);
-  g.hurtEnemy(ghoul, 31, 5, { fromPlayer: true, crit: true });
-  g.log('Scrawled in blood: "If it glows red, get the hell out of the way."', 0xe0a050);
-  g.log(`Found: ${p.eq.weapon!.name} (Rare ${p.eq.weapon!.baseName})`, 0xffe04a);
-  for (let i = 0; i < 60 && g.teles.length < 3; i++) {
-    g.update();
-    p.hp = Math.max(p.hp, 90);
-  }
+  g.onPlayerEnter();
   g.banner = null;
-  snap(g, '3-combat');
+  for (let i = 0; i < 40 && g.teles.length < 2; i++) {
+    g.update();
+    p.hp = Math.max(p.hp, 120);
+  }
+  g.hurtEnemy(g.enemies[0], 40, 5, { fromPlayer: true, crit: true });
+  g.banner = null;
+  snap(g, '4-rotwood');
 }
 
-// ------------------------------------------------------------------ 4. boss
+// ------------------------------------------------------------------ 5. the Choir
 {
   const g = game(77);
-  g.enterFloor(3);
-  g.msgs = [];
+  g.player.tools = ['spade', 'lantern', 'hook', 'bell'];
+  g.player.tool = 3;
+  g.enterLocation('d2f1');
   const f = g.floor;
   const r = f.bossRoom!;
   const boss = g.enemies.find((e) => e.boss)!;
   g.enemies = [boss];
   g.player.x = f.lockedDoor.x;
   g.player.y = f.lockedDoor.y;
-  explore(g, 40);
-  g.player.x = r.x + 3;
-  g.player.y = r.y + 2;
+  explore(g, 30);
+  g.player.x = r.x + 4;
+  g.player.y = r.y + 3;
   g.onPlayerEnter();
   g.banner = null;
-  g.player.level = 8;
-  g.player.eq.weapon = makeUnique(g.rng, 'grudge', 3);
+  g.player.level = 14;
+  g.player.eq.weapon = makeUnique(g.rng, 'oath', 6);
   g.recalc();
-  g.player.hp = g.stats.maxHp * 0.55;
-  boss.hp = boss.maxHp * 0.62;
+  g.player.hp = g.stats.maxHp * 0.6;
+  boss.hp = boss.maxHp * 0.7;
   boss.cd = 0;
-  for (let i = 0; i < 400; i++) {
+  for (let i = 0; i < 600; i++) {
+    if (boss.state === 'chase') boss.cd = 0;
     g.update();
-    g.player.hp = Math.max(g.player.hp, g.stats.maxHp * 0.5);
-    const t = g.teles[0];
-    if (t && t.tiles.length > 12 && t.t < t.max * 0.5) break;
+    g.player.hp = Math.max(g.player.hp, g.stats.maxHp * 0.55);
+    if (g.teles.length >= 3 && g.teles[0].t < g.teles[0].max * 0.5) break;
   }
-  for (let y = r.y; y < r.y + r.h; y++) for (let x = r.x; x < r.x + r.w; x++) if ((x * 7 + y * 13) % 11 === 0) f.decal[y * MAP_W + x] = 1;
-  g.msgs = [];
-  g.log('It wears the skins of those who came before you. There is room for one more.', 0xd08060);
-  g.log('Scrawled in blood: "Parry the slow ones. Run from the big ones."', 0xe0a050);
   g.banner = null;
-  snap(g, '4-boss');
+  snap(g, '5-choir');
 }
 
-// ------------------------------------------------------------------ 5. puzzle
-{
-  let done = false;
-  for (let seed = 1; seed < 200 && !done; seed++) {
-    const g = game(seed);
-    const f = g.floor;
-    const pz = f.puzzles.find((p) => p.kind === 'braziers' && p.order.length === 3);
-    if (!pz) continue;
-    const r = pz.room;
-    g.enemies = [];
-    const tablet = f.objects.find((o) => o.kind === 'tablet' && o.puzzle === pz.id)!;
-    const spot = DIRS.map((d) => ({ x: tablet.x + d.x, y: tablet.y + d.y })).find((v) => f.tiles[v.y * MAP_W + v.x] === T.FLOOR && !g.objAt(v.x, v.y))!;
-    g.player.x = spot.x;
-    g.player.y = spot.y;
-    const first = f.objects.find((o) => o.kind === 'brazier' && o.puzzle === pz.id && o.idx === pz.order[0])!;
-    g.lightBrazier(first);
-    explore(g, 30);
-    g.msgs = [];
-    g.log('Scrawled in blood: "Read the stone first"', 0xe0a050);
-    g.log(`The ${first.cname} brazier catches with a hungry roar.`, first.color);
-    tick(g, 3);
-    g.banner = null;
-    g.useObject(tablet);
-    snap(g, '5-puzzle');
-    done = true;
-  }
-}
-
-// ------------------------------------------------------------------ 6. inventory
+// ------------------------------------------------------------------ 6. the journal
 {
   const g = game(9);
-  g.enterFloor(6);
-  const p = g.player;
-  p.eq.weapon = makeItem(g.rng, 6, 2, 'weapon', 'sword');
-  p.eq.helm = makeItem(g.rng, 5, 1, 'helm');
-  p.eq.chest = makeItem(g.rng, 6, 2, 'chest');
-  p.eq.ring = makeUnique(g.rng, 'ninth', 4);
-  p.eq.amulet = makeItem(g.rng, 5, 1, 'amulet');
-  p.inv = [
-    makeUnique(g.rng, 'mourning', 6),
-    makeItem(g.rng, 6, 2, 'weapon', 'spear'),
-    makeItem(g.rng, 6, 1, 'helm'),
-    makeItem(g.rng, 5, 0, 'chest'),
-    makeItem(g.rng, 6, 2, 'ring'),
-    makeItem(g.rng, 6, 1, 'weapon', 'dagger'),
-    makeUnique(g.rng, 'crown', 6),
-    makeItem(g.rng, 4, 0, 'weapon', 'mace'),
-    makeItem(g.rng, 6, 1, 'amulet'),
-  ];
-  g.recalc();
-  g.mode = 'inv';
-  g.invSel = 5;
-  g.banner = null;
-  snap(g, '6-inventory');
+  for (const id of ['ledger', 'letter', 'ribbon', 'warden_book', 'receipt', 'drawing', 'psalter']) g.giveLore(id);
+  g.setQuest('main', 3);
+  g.setQuest('bridge', 2);
+  g.setQuest('harrow', 3);
+  g.setQuest('doll', 2);
+  g.setQuest('psalter', 1);
+  g.setQuest('hearts', 1);
+  g.questItems.hollow_heart = 3;
+  g.mode = 'journal';
+  g.journalTab = 1;
+  g.journalSel = 2;
+  snap(g, '6-journal');
+}
+
+// ------------------------------------------------------------------ 7. the world map
+{
+  const g = game(4242);
+  g.player.tools = ['spade', 'lantern', 'hook'];
+  g.setFlag('bridge');
+  g.floors.clear();
+  g.enterLocation('world', { x: 61, y: 52 });
+  g.floor.seen.fill(1);
+  g.mode = 'map';
+  snap(g, '7-map');
 }

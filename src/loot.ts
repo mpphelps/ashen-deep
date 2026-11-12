@@ -94,6 +94,7 @@ export interface UniqueDef {
   base: string;
   affixes: [string, number][];
   special: string;
+  questOnly?: boolean;
 }
 
 export const UNIQUES: UniqueDef[] = [
@@ -107,6 +108,11 @@ export const UNIQUES: UniqueDef[] = [
   { id: 'tithe', name: 'Bloodtithe Band', slot: 'ring', base: 'ring', affixes: [['dmgPct', 45]], special: 'Every swing costs 2% of your max HP.' },
   { id: 'mercy', name: "Saint's Last Mercy", slot: 'amulet', base: 'amulet', affixes: [['flaskPct', 60], ['staRegen', 15]], special: 'Drinking a flask also cleanses poison and fire.' },
   { id: 'hunger', name: 'Hunger of the Hollow', slot: 'amulet', base: 'amulet', affixes: [['lifesteal', 4], ['critMult', 30]], special: 'Backstabs and ripostes heal 25% of max HP.' },
+  // quest rewards (never drop randomly)
+  { id: 'cleaver', name: "Pell's Cleaver", slot: 'weapon', base: 'axe', affixes: [['lifesteal', 5], ['bleed', 35]], special: 'Hollow-kind you kill give 50% more ashes. "Waste not!"', questOnly: true },
+  { id: 'oath', name: "Harrow's Oath", slot: 'weapon', base: 'sword', affixes: [['dmgPct', 25], ['staCost', 15]], special: "The hilt is wrapped in a child's bootlace.", questOnly: true },
+  { id: 'scourge', name: "Ambrose's Scourge", slot: 'weapon', base: 'scythe', affixes: [['bleed', 45], ['crit', 8]], special: 'Every hit also costs you 1 HP. Penance is a habit.', questOnly: true },
+  { id: 'button', name: "Mouse's Button", slot: 'amulet', base: 'amulet', affixes: [['mf', 40], ['maxHp', 20]], special: 'A plain coat button. It is the only gift anyone in Hollowmere has given you.', questOnly: true },
 ];
 const UNIQUE_BY_ID: Record<string, UniqueDef> = Object.fromEntries(UNIQUES.map((u) => [u.id, u]));
 
@@ -133,7 +139,7 @@ function rollAffixValue(rng: RNG, def: AffixDef, ilvl: number): number {
 
 export function makeItem(rng: RNG, ilvl: number, rarity: number, forceSlot?: Slot, forceBase?: string): Item {
   if (rarity >= 3) {
-    const pool = UNIQUES.filter((u) => !forceSlot || u.slot === forceSlot);
+    const pool = UNIQUES.filter((u) => !u.questOnly && (!forceSlot || u.slot === forceSlot));
     return makeUnique(rng, rng.pick(pool).id, ilvl);
   }
   const slot: Slot =
@@ -317,6 +323,7 @@ export function computeStats(p: Player, lament: number): Stats {
   s.lifesteal = Math.min(25, s.lifesteal);
   if (s.uniques.has('crown')) s.maxHp = Math.round(s.maxHp * 0.85);
   s.dmgPct += lament * 5;
+  s.flaskPct += (p.salts ?? 0) * 12;
   return s;
 }
 
