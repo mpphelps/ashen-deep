@@ -1,5 +1,7 @@
 # The Ashen Deep
 
+[![Play in your browser](https://img.shields.io/badge/%E2%96%B6%20Play%20in%20your%20browser-mpphelps.github.io%2Fashen--deep-8a2a20?style=for-the-badge)](https://mpphelps.github.io/ashen-deep/)
+
 A dark-fantasy action RPG you can play **in your terminal or in your browser**. It has an open world
 to explore, four dungeons, a hub town full of people who hate you, and a story you piece together
 from what the dead leave behind. The combat is real-time and souls-like, the world and dungeons are
@@ -13,7 +15,7 @@ Zelda-style puzzles, and the loot is Diablo-style. It is written in TypeScript w
 
 ## Two ways to play
 
-**Play it now in your browser: https://mpphelps.github.io/ashen-deep/** (no install needed)
+**[▶ Play it now in your browser](https://mpphelps.github.io/ashen-deep/)** (no install needed)
 
 One game core, two renderers. Everything works the same in both: every quest, boss, puzzle, talent and save system.
 
