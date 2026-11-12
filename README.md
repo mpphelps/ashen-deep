@@ -13,6 +13,8 @@ Zelda-style puzzles, and the loot is Diablo-style. It is written in TypeScript w
 
 ## Two ways to play
 
+**Play it now in your browser: https://mpphelps.github.io/ashen-deep/** (no install needed)
+
 One game core, two renderers. Everything works the same in both: every quest, boss, puzzle, talent and save system.
 
 | In the terminal: `npm start` | In the browser: `npm run web` |
