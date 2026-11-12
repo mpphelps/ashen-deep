@@ -253,3 +253,14 @@ function explore(g: Game, steps: number, every = 3): void {
   g.talentRow = 5;
   snap(g, '8-talents');
 }
+
+// ------------------------------------------------------------------ 9. bestiary
+{
+  const g = game(13);
+  for (const id of ['hollow', 'rat', 'ghoul', 'archer', 'bloated', 'knight', 'cultist', 'warden']) g.setFlag(`seen:${id}`);
+  Object.assign(g.counters, { 'kill:hollow': 41, 'kill:rat': 77, 'kill:ghoul': 12, 'kill:archer': 9, 'kill:bloated': 6, 'kill:knight': 3, 'kill:cultist': 4 });
+  g.mode = 'journal';
+  g.journalTab = 2;
+  g.journalSel = 5;
+  snap(g, '9-bestiary');
+}

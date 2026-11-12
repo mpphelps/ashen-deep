@@ -519,6 +519,27 @@ function grabStory(): void {
   ok(d.player.talents.length === 0 && d.player.talentPoints === pts + spent, 'forgetting at a bonfire returns every point, for ashes');
 }
 
+// ---------------------------------------------------------------- the bestiary
+{
+  const h = fresh(31);
+  ok(h.bestiary().length === 0, 'the bestiary starts empty');
+  const e = duel(h, 'ghoul');
+  h.updateFov();
+  tick(h, 6);
+  const entry = h.bestiary().find((b) => b.title === 'Ghoul');
+  ok(!!entry && entry.text.includes('Lunge') && entry.text.includes('Killed: 0'), 'seeing a ghoul writes it into the bestiary, moves and all');
+  ok(!h.bestiary().some((b) => b.title === 'Crypt Knight'), 'creatures you have not met stay hidden');
+  h.hurtEnemy(e, 9999, 0, { fromPlayer: true });
+  ok(h.bestiary().find((b) => b.title === 'Ghoul')!.text.includes('Killed: 1'), 'kills are counted');
+  h.enterLocation('d0f1');
+  const boss = h.enemies.find((x) => x.boss)!;
+  h.player.x = boss.x;
+  h.player.y = boss.y + 3;
+  h.updateFov();
+  h.setFlag('seen:warden');
+  ok(h.bestiary().some((b) => b.title.includes('The Flayed Warden') && b.text.includes('Charge')), 'bosses get entries with their phase-two moves');
+}
+
 // ---------------------------------------------------------------- render every screen once
 {
   const h = fresh(8);

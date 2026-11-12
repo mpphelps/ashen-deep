@@ -297,3 +297,77 @@ export const URN_LINES = [
   'The urn breaks. Someone was kept in there.',
   'Shards and a dried finger. Charming.',
 ];
+
+// --------------------------------------------------------------------- bestiary: how each thing fights
+export const MOVES: Record<string, string[]> = {
+  hollow: [
+    'Claw: a short wind-up, then a strike on the tile you stand on. Step off it, roll, or parry.',
+    'Slow and easily distracted. A favorite for backstabs.',
+  ],
+  rat: ['Bite: quick, weak, poisonous. Always in packs of three or four.', 'A wide swing clears the whole pack.'],
+  ghoul: [
+    'Lunge: when you are in a straight line within three tiles, it marks the line and dashes through it.',
+    'Step off the line, not backward along it. It is open while it recovers.',
+  ],
+  archer: [
+    'Aimed shot: a dim line shows where the arrow will fly. Move off the line before it looses.',
+    'Backs away when you close in; kicks if cornered. Break line of sight or rush it.',
+  ],
+  cultist: [
+    'Pyre: calls fire onto the 3x3 around you, leaving burning ground behind.',
+    'Blinks away when you get close. Rush it between casts.',
+  ],
+  bloated: [
+    'Burst: when adjacent it swells, then explodes in a 3x3 of acid that hurts its own kind too.',
+    'Also bursts when it dies. Kill it from range, or lure it into a crowd.',
+  ],
+  knight: [
+    'Shield: blocks most damage from the front. Heavy attacks, backstabs and ripostes get through.',
+    'Sweep: a three-tile arc. Parry it, or circle around to its back.',
+  ],
+  wraith: [
+    'Passes through walls. Grabs at the tile you stand on.',
+    'The Silent Bell staggers it.',
+  ],
+  maggot: ['Bite: weak and poisonous, in swarms of three to five.', 'The Mother births more of them.'],
+  flagellant: [
+    'Flurry: up to three swings, each following you. Back off after the first, or parry the last.',
+    'Long recovery after the third swing.',
+  ],
+  sentinel: [
+    'Slam: crushes all eight tiles around it. Cannot be parried; step two tiles away.',
+    'Heavy poise. A long recovery after every slam is your window.',
+  ],
+  hound: ['Bite: fast, in packs of two or three. They run you down; turn and fight.'],
+  choirling: [
+    'Note: sings a slow projectile from range. Sidestep it.',
+    'The Silent Bell staggers it.',
+  ],
+  // ------------------------------------------------------------------- bosses
+  warden: [
+    'Cleave: a cone in front of it, three tiles deep.',
+    'Slam: a ring two to three tiles out. Stand right against it, or well clear.',
+    'Charge: marks a three-wide lane and barrels down it. Step out of the lane.',
+    'Phase two, Chains: tiles scattered around you are marked. Find an unmarked one.',
+    'Cannot be parried. Heavy blows break its poise.',
+  ],
+  mother: [
+    'Spew: a cone of acid that leaves poisoned ground.',
+    'Birth: maggots wriggle out of her. Kill them before they swarm you.',
+    'Crush: a ring two to three tiles out.',
+    'Phase two, Rain: acid falls on scattered tiles around you.',
+  ],
+  choir: [
+    'Hymn: concentric rings of song. Stand in the quiet gaps between them.',
+    'Volley: a fan of notes. Sidestep or roll through.',
+    'Summon: two choirlings join the hymn.',
+    'Phase two: the hymn comes in two offset waves. Find the silence, then find it again.',
+    'Phase two, Requiem: every other stone of the floor sings. Stand on a quiet one.',
+  ],
+  king: [
+    'Sweep: a wide cone in front of him.',
+    'Blink: he vanishes and reappears beside you, then slams a ring around himself.',
+    'Soulfire: bolts in eight directions (sixteen in phase two). Stand between them.',
+    'Phase two, Cross: the whole row and column you stand on.',
+  ],
+};

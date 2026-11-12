@@ -10,7 +10,7 @@ import {
 } from './types.ts';
 import { generateDungeon } from './dungeon.ts';
 import { buildWorld, regionAt, START } from './world.ts';
-import { ENEMIES, BOSSES, ELITE_MODS, THEMES, eliteName, DEATH_LINES, URN_LINES } from './data.ts';
+import { ENEMIES, BOSSES, ELITE_MODS, THEMES, MOVES, eliteName, DEATH_LINES, URN_LINES } from './data.ts';
 import {
   makeItem, makeUnique, rollLoot, rollRarity, computeStats, weaponBase, scaleBonus, salvageValue, setUidFloor,
   RARITY_COLORS, RARITY_NAMES, INV_MAX, UNIQUES, type Stats, type Drop,
@@ -904,6 +904,7 @@ export class Game {
       return out;
     }
     if (this.journalTab === 1) return this.lore.map((id) => ({ title: LORE[id].title, text: LORE[id].text, color: 0xe0c8a0 }));
+    if (this.journalTab === 2) return this.bestiary();
     const tools = this.player.tools.map((t) => ({ title: TOOL_INFO[t].name, text: `${TOOL_INFO[t].found}  ${TOOL_INFO[t].desc}`, color: TOOL_INFO[t].color }));
     const items = Object.entries(this.questItems).filter(([, n]) => n > 0).map(([id, n]) => ({ title: `${QUEST_ITEMS[id]}${n > 1 ? ` x${n}` : ''}`, text: 'Someone in Hollowmere wants this.', color: 0xffe0a0 }));
     return [...tools, ...items];
@@ -911,8 +912,8 @@ export class Game {
 
   journalInput(key: string): void {
     if (key === 'esc' || key === 'journal') { this.mode = 'play'; return; }
-    if (key === 'left') { this.journalTab = (this.journalTab + 2) % 3; this.journalSel = 0; this.sfx('menu'); }
-    else if (key === 'right') { this.journalTab = (this.journalTab + 1) % 3; this.journalSel = 0; this.sfx('menu'); }
+    if (key === 'left') { this.journalTab = (this.journalTab + 3) % 4; this.journalSel = 0; this.sfx('menu'); }
+    else if (key === 'right') { this.journalTab = (this.journalTab + 1) % 4; this.journalSel = 0; this.sfx('menu'); }
     const n = this.journalEntries().length;
     if (!n) return;
     if (key === 'up') this.journalSel = (this.journalSel + n - 1) % n;
@@ -1020,6 +1021,7 @@ export class Game {
     for (const fx of this.fx) fx.t--;
     this.fx = this.fx.filter((f) => f.t > 0);
     this.updateFov();
+    this.noticeCreatures();
     if (this.pendingEnding && !this.banner) {
       this.mode = 'ending';
       this.endingStep = 0;
@@ -1911,6 +1913,8 @@ export class Game {
     if (st.uniques.has('cleaver') && d.hollow && !e.boss) ashes = Math.round(ashes * 1.5);
     p.ashes += ashes;
     this.kills++;
+    const kid = `kill:${e.boss ?? e.def}`;
+    this.counters[kid] = (this.counters[kid] ?? 0) + 1;
     const f = this.floor;
     const i = this.idx(e.x, e.y);
     if (f.tiles[i] === T.FLOOR || f.tiles[i] === T.OPEN) f.decal[i] = e.def === 'archer' || e.def === 'sentinel' ? 3 : 2;
@@ -2558,6 +2562,32 @@ export class Game {
         this.addFx(e.x, e.y - 1, '^', 0xff8030, 3);
       }
     }
+  }
+
+  /** First sight of a creature writes it into the bestiary. */
+  noticeCreatures(): void {
+    if (this.tick % 5) return;
+    for (const e of this.enemies) {
+      if (e.dead || e.ally) continue;
+      const id = e.boss ?? e.def;
+      if (this.flags.has(`seen:${id}`) || this.vis[this.idx(e.x, e.y)] <= 0) continue;
+      this.setFlag(`seen:${id}`);
+      this.log(`Bestiary: ${e.boss ? BOSSES[id].name : ENEMIES[id].name} (B)`, 0x9a9488);
+    }
+  }
+
+  bestiary(): { title: string; text: string; color: number }[] {
+    const out: { title: string; text: string; color: number }[] = [];
+    const add = (id: string, name: string, desc: string, color: number, boss: boolean) => {
+      if (!this.flags.has(`seen:${id}`)) return;
+      const kills = this.counters[`kill:${id}`] ?? 0;
+      const moves = (MOVES[id] ?? []).map((m) => `• ${m}`).join('  ');
+      const tail = boss ? (this.bossDead(id) ? 'Destroyed.' : 'Still waiting for you.') : `Killed: ${kills}.`;
+      out.push({ title: `${boss ? '† ' : ''}${name}`, text: `${desc}  ${moves}  ${tail}`, color });
+    };
+    for (const d of Object.values(ENEMIES)) add(d.id, d.name, d.desc, d.color, false);
+    for (const b of Object.values(BOSSES)) add(b.id, b.name, `${b.title}. ${b.intro}`, b.color, true);
+    return out;
   }
 
   // ================================================================ UI helpers

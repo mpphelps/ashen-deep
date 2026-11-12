@@ -776,7 +776,7 @@ function drawJournal(g: Game, s: Screen): void {
   const w = Math.min(s.w - 4, 104), h = s.h - 2;
   const x = (s.w - w) >> 1, y = 1;
   box(s, x, y, w, h, 'JOURNAL', 0x8a7a5a);
-  const tabs = ['QUESTS', 'WHAT YOU HAVE LEARNED', 'TOOLS & KEEPSAKES'];
+  const tabs = ['QUESTS', 'WHAT YOU HAVE LEARNED', 'BESTIARY', 'TOOLS & KEEPSAKES'];
   let tx = x + 3;
   tabs.forEach((t, i) => {
     const sel = i === g.journalTab;
@@ -785,7 +785,8 @@ function drawJournal(g: Game, s: Screen): void {
   const entries = g.journalEntries();
   const listW = 38;
   for (let j = y + 3; j < y + h - 1; j++) s.put(x + listW + 1, j, '│', BORDER);
-  if (!entries.length) s.text(x + 3, y + 4, g.journalTab === 1 ? 'Nothing yet. The dead keep their secrets close.' : 'Nothing.', DIM);
+  if (!entries.length) s.text(x + 3, y + 4, g.journalTab === 1 ? 'Nothing yet. The dead keep their secrets close.' : g.journalTab === 2 ? 'You have not met anything yet. You will.' : 'Nothing.', DIM);
+  if (g.journalTab === 2) s.text(x + w - 22, y + 1, `${entries.length} of 17 known`, DIM);
   entries.forEach((en, k) => {
     if (k > h - 7) return;
     const sel = k === g.journalSel;
@@ -797,7 +798,11 @@ function drawJournal(g: Game, s: Screen): void {
     const dw = w - listW - 6;
     s.text(x + listW + 3, dy++, sel.title.slice(0, dw), sel.color);
     dy++;
-    for (const ln of wrap(sel.text, dw)) if (dy < y + h - 2) s.text(x + listW + 3, dy++, ln, 0xd8d0c0);
+    for (const para of sel.text.split('  ')) {
+      const move = para.startsWith('•');
+      for (const ln of wrap(para, dw)) if (dy < y + h - 2) s.text(x + listW + 3, dy++, ln, move ? 0xc8b890 : para.startsWith('Killed') || para.startsWith('Destroyed') || para.startsWith('Still') ? DIM : 0xd8d0c0);
+      if (g.journalTab === 2 && dy < y + h - 2) dy++;
+    }
   }
   s.text(x + 2, y + h - 2, '[←→] section  [↑↓] select  [B/Esc] close', ACCENT);
 }
