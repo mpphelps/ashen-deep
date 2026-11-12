@@ -264,3 +264,10 @@ function explore(g: Game, steps: number, every = 3): void {
   g.journalSel = 5;
   snap(g, '9-bestiary');
 }
+
+// ------------------------------------------------------------------ 10. help & legend
+{
+  const g = game(14);
+  g.mode = 'help';
+  snap(g, '10-help');
+}

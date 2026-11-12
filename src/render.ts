@@ -2,7 +2,7 @@
 import { Game, levelCost, BLOCKING } from './game.ts';
 import { Screen, scale, mix } from './term.ts';
 import { T, TOOLS, type Obj, type Enemy, type Slot, type Floor } from './types.ts';
-import { ENEMIES, BOSSES, ELITE_MOD_NAMES, BIOMES } from './data.ts';
+import { ENEMIES, BOSSES, BOSS_GLYPH, ELITE_MOD_NAMES, BIOMES } from './data.ts';
 import { RARITY_COLORS, itemLines, itemGlyph, weaponBase, PATTERN_DESC, INV_MAX, salvageValue } from './loot.ts';
 import { G } from './world.ts';
 import { TOOL_INFO, NPCS, ENDING_INTRO, ENDINGS } from './story.ts';
@@ -498,7 +498,9 @@ function drawSidebar(g: Game, s: Screen, x0: number): void {
   hline(s, x0 + 1, y++, SW - 1);
   const tg = g.target && !g.target.dead ? g.target : null;
   if (tg) {
-    s.text(x, y++, tg.name.slice(0, W), tg.elite ? 0xffd040 : tg.boss ? BOSSES[tg.boss].color : TEXT);
+    const tcol = tg.elite ? 0xffd040 : tg.boss ? BOSSES[tg.boss].color : ENEMIES[tg.def].color;
+    s.put(x, y, tg.boss ? BOSS_GLYPH[tg.boss] : ENEMIES[tg.def].glyph, tcol);
+    s.text(x + 2, y++, tg.name.slice(0, W - 2), tcol);
     bar(s, x, y++, SW - 4, tg.hp / tg.maxHp, 0xb02020, 0x301010);
     let info = '';
     if (tg.elite) info = tg.elite.mods.map((m) => ELITE_MOD_NAMES[m]).join(', ');
@@ -516,9 +518,27 @@ function drawSidebar(g: Game, s: Screen, x0: number): void {
   const near = g.nearbyDescription();
   for (let k = 0; k < 2; k++) s.text(x, y++, (near[k] ?? '').slice(0, W), 0xd0c8a8);
   hline(s, x0 + 1, y++, SW - 1);
+  // what is that letter? every creature in view, by symbol
+  s.text(x, y, 'IN SIGHT', DIM);
+  const sight = g.inSight();
+  let lx = x + 9, ly = y;
+  if (!sight.length) s.text(lx, ly, 'nothing', 0x3a362e);
+  for (const c of sight) {
+    const label = `${c.name}${c.n > 1 ? ` x${c.n}` : ''}`;
+    const len = label.length + 3;
+    if (lx + len > x0 + SW) {
+      if (ly >= y + 2) break;
+      lx = x;
+      ly++;
+    }
+    s.put(lx, ly, c.glyph, c.color);
+    s.text(lx + 2, ly, label.slice(0, x0 + SW - lx - 3), scale(c.color, 0.8));
+    lx += len;
+  }
+  y += 3;
+  hline(s, x0 + 1, y++, SW - 1);
   const ctl: [string, string][] = [
-    ['WASD', 'move'], ['J', 'atk'], ['K', 'heavy'], ['SPC', 'roll'], ['Q', 'parry'], ['F', 'flask'], ['E', 'use'],
-    ['R', 'tool'], ['T', 'talents'], ['I', 'pack'], ['B', 'journal'], ['M', 'map'], ['?', 'help'],
+    ['?', 'help & legend'], ['T', 'talents'], ['B', 'journal'], ['I', 'pack'], ['M', 'map'],
   ];
   let cx = x;
   for (const [k, v] of ctl) {
@@ -786,17 +806,32 @@ function drawJournal(g: Game, s: Screen): void {
   const listW = 38;
   for (let j = y + 3; j < y + h - 1; j++) s.put(x + listW + 1, j, '│', BORDER);
   if (!entries.length) s.text(x + 3, y + 4, g.journalTab === 1 ? 'Nothing yet. The dead keep their secrets close.' : g.journalTab === 2 ? 'You have not met anything yet. You will.' : 'Nothing.', DIM);
-  if (g.journalTab === 2) s.text(x + w - 22, y + 1, `${entries.length} of 17 known`, DIM);
+  if (g.journalTab === 2) s.text(x + w - 22, y + 1, `${entries.filter((e) => !e.unknown).length} of 17 known`, DIM);
+  let row = y + 4;
+  let lastGroup = '';
   entries.forEach((en, k) => {
-    if (k > h - 7) return;
+    if (en.group && en.group !== lastGroup) {
+      if (lastGroup) row++;
+      lastGroup = en.group;
+      if (row < y + h - 3) s.text(x + 3, row++, en.group, 0x8a7a5a);
+    }
+    if (row >= y + h - 3) return;
     const sel = k === g.journalSel;
-    s.text(x + 2, y + 4 + k, `${sel ? '▶' : ' '} ${en.title}`.slice(0, listW - 2), en.color, sel ? 0x2a2018 : undefined);
+    s.text(x + 2, row, sel ? '▶' : ' ', en.color, sel ? 0x2a2018 : undefined);
+    if (en.glyph) {
+      s.put(x + 4, row, en.glyph, en.color);
+      s.text(x + 6, row, en.title.slice(0, listW - 7), en.color, sel ? 0x2a2018 : undefined);
+    } else s.text(x + 4, row, en.title.slice(0, listW - 5), en.color, sel ? 0x2a2018 : undefined);
+    row++;
   });
   const sel = entries[g.journalSel];
   if (sel) {
     let dy = y + 4;
     const dw = w - listW - 6;
-    s.text(x + listW + 3, dy++, sel.title.slice(0, dw), sel.color);
+    if (sel.glyph) {
+      s.put(x + listW + 3, dy, sel.glyph, sel.color, 0x1a1612);
+      s.text(x + listW + 5, dy++, sel.title.slice(0, dw - 2), sel.color);
+    } else s.text(x + listW + 3, dy++, sel.title.slice(0, dw), sel.color);
     dy++;
     for (const para of sel.text.split('  ')) {
       const move = para.startsWith('•');
@@ -851,32 +886,42 @@ function drawMap(g: Game, s: Screen): void {
   s.text(x + 2, y + h - 1, ' any key to close ', DIM);
 }
 
+const LEGEND: [string, number, string][] = [
+  ['@', 0xfff4e0, 'you'], ['☻', 0xc8b0d8, 'townsfolk'], ['z', 0x90e0a0, 'your thrall'], ['!', 0xff4040, 'it saw you'],
+  ['☼', 0xffa030, 'bonfire'], ['¡', 0xffc060, 'lamp'], ['■', 0xc09048, 'chest'], ['δ', 0xa88058, 'urn (break it)'],
+  ['†', 0x9a9a9a, 'grave (dig it)'], ['≡', 0xc0c0d8, 'inscription'], ['?', 0xe8a050, 'blood message'], ['^', 0xff3030, 'spike trap'],
+  ['Ψ', 0xd82a2a, 'brazier'], ['◊', 0x70f0ff, 'rune stone'], ['●', 0xb0a898, 'puzzle stone'], ['□', 0x9a9080, 'stone scale'],
+  ['+', 0xb07a40, 'door'], ['+', 0xffc040, 'locked door'], ['▒', 0xa09080, 'cracked wall'], ['#', 0xa08a6a, 'rubble (spade)'],
+  ['‡', 0x8a5a6a, 'thorns (lantern)'], ['░', 0x3a3a5a, 'gap / mist'], ['≈', 0x2a4a6a, 'water'], ['♣', 0x6a5a40, 'tree'],
+  ['>', 0xf0f0ff, 'stairs down'], ['<', 0xf0f0ff, 'way out'], ['▼', 0xffd8a0, 'dungeon'], ['§', 0xff3030, 'your bloodstain'],
+  ['/', 0x7898ff, 'weapon'], [')', 0x7898ff, 'bow'], ['[', 0x7898ff, 'armor'], ['=', 0x7898ff, 'ring'],
+  ['¶', 0xf0e0c0, 'lore page'], ['◘', 0xffe0a0, 'quest item'], ['⌐', 0xffd040, 'crypt key'], ['!', 0xfff0b0, 'sacred tallow'],
+];
+
 function drawHelp(s: Screen): void {
   const lines: [string, number][] = [
-    ['MOVE        WASD / arrows   walk into people and things to use them', TEXT],
-    ['ATTACK      J or X          quick strike in the direction you face', TEXT],
-    ['HEAVY       K or C          slow, 1.8x damage, staggers, breaks cracked walls', TEXT],
-    ['ROLL        Space           dodge 2 tiles, invulnerable while rolling', TEXT],
-    ['PARRY       Q or L          time it as a red tile flashes, then riposte (3x)', TEXT],
-    ['FLASK       F               heal ~45%. Refills at bonfires.', TEXT],
-    ['USE / TALK  E               bonfires, chests, inscriptions, people', TEXT],
-    ['TOOL        R  (1-4 pick)   spade, lantern, chain hook, bell', TEXT],
-    ['SKILLS      U  O  P         active talents (bind them in the talent screen)', TEXT],
-    ['TALENTS T   PACK I   JOURNAL B   MAP M   SOUND N', TEXT],
+    ['MOVE   WASD / arrows      ATTACK J or X      HEAVY K or C      ROLL Space', TEXT],
+    ['PARRY  Q or L             FLASK  F           USE / TALK  E', TEXT],
+    ['TOOL   R  (pick 1-4)      SKILLS U O P       TALENTS T    PACK I', TEXT],
+    ['JOURNAL B (quests, lore, bestiary)           MAP M        SOUND N', TEXT],
     ['', TEXT],
     ['• Red tiles are incoming attacks. Get out, roll through, or parry.', 0xff7060],
-    ['• Unaware enemies (dim) take 2.5x BACKSTAB damage. Approach from the dark.', 0xd0c8a8],
-    ['• Each dungeon floor has a locked door. Puzzles and tools earn the key.', 0xffd060],
-    ['• Rubble, thorns, gaps and mist: each needs a tool. Come back when you have it.', 0xffd060],
-    ['• Talk to everyone in Hollowmere. They hate you. They know why.', 0xc8b0d8],
-    ['• Dying drops your ashes as a bloodstain (§). Reach it to reclaim.', 0xff6060],
-    ['• Resting heals and lets you travel between flames. The dead rise again.', 0xffa040],
-    ['• Each level gives a talent point. Four paths; you will not master them all.', 0x9ad0a0],
+    ['• Dim enemies have not noticed you: 2.5x BACKSTAB. Letters are creatures;', 0xd0c8a8],
+    ['  the sidebar\'s IN SIGHT names them, the Bestiary explains them.', 0xd0c8a8],
+    ['• Dying drops your ashes as a bloodstain. Resting raises the dead again.', 0xffa040],
   ];
-  const w = 80, h = lines.length + 4;
+  const w = 84, h = lines.length + Math.ceil(LEGEND.length / 4) + 7;
   const x = Math.max(0, (s.w - w) >> 1), y = Math.max(0, (s.h - h) >> 1);
   box(s, x, y, w, h, 'HOW TO SURVIVE (YOU WILL NOT)');
   lines.forEach(([t, c], k) => s.text(x + 3, y + 2 + k, t, c));
+  const ly = y + 3 + lines.length;
+  s.text(x + 3, ly, 'WHAT YOU ARE LOOKING AT', ACCENT);
+  LEGEND.forEach(([g, c, label], i) => {
+    const col = i % 4, row = (i / 4) | 0;
+    const lx = x + 3 + col * 20;
+    s.put(lx, ly + 2 + row, g, c, 0x1a1612);
+    s.text(lx + 2, ly + 2 + row, label.slice(0, 17), 0xa8a090);
+  });
   s.text(x + 3, y + h - 1, ' any key to close ', DIM);
 }
 

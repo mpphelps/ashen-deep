@@ -371,3 +371,5 @@ export const MOVES: Record<string, string[]> = {
     'Phase two, Cross: the whole row and column you stand on.',
   ],
 };
+
+export const BOSS_GLYPH: Record<string, string> = { warden: 'W', mother: 'O', choir: 'Ω', king: '♦' };

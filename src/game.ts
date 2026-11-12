@@ -10,7 +10,7 @@ import {
 } from './types.ts';
 import { generateDungeon } from './dungeon.ts';
 import { buildWorld, regionAt, START } from './world.ts';
-import { ENEMIES, BOSSES, ELITE_MODS, THEMES, MOVES, eliteName, DEATH_LINES, URN_LINES } from './data.ts';
+import { ENEMIES, BOSSES, BOSS_GLYPH, ELITE_MODS, THEMES, MOVES, eliteName, DEATH_LINES, URN_LINES } from './data.ts';
 import {
   makeItem, makeUnique, rollLoot, rollRarity, computeStats, weaponBase, scaleBonus, salvageValue, setUidFloor,
   RARITY_COLORS, RARITY_NAMES, INV_MAX, UNIQUES, type Stats, type Drop,
@@ -56,6 +56,14 @@ export interface DialogState {
   page: number;
   after?: () => void;
   shop?: string;
+}
+export interface JournalEntry {
+  title: string;
+  text: string;
+  color: number;
+  glyph?: string;
+  group?: string;
+  unknown?: boolean;
 }
 export interface ShopEntry {
   name: string;
@@ -890,7 +898,7 @@ export class Game {
   }
 
   // ---- journal
-  journalEntries(): { title: string; text: string; color: number }[] {
+  journalEntries(): JournalEntry[] {
     if (this.journalTab === 0) {
       const out: { title: string; text: string; color: number }[] = [];
       for (const [id, q] of Object.entries(QUESTS)) {
@@ -2576,18 +2584,46 @@ export class Game {
     }
   }
 
-  bestiary(): { title: string; text: string; color: number }[] {
-    const out: { title: string; text: string; color: number }[] = [];
-    const add = (id: string, name: string, desc: string, color: number, boss: boolean) => {
-      if (!this.flags.has(`seen:${id}`)) return;
-      const kills = this.counters[`kill:${id}`] ?? 0;
-      const moves = (MOVES[id] ?? []).map((m) => `• ${m}`).join('  ');
-      const tail = boss ? (this.bossDead(id) ? 'Destroyed.' : 'Still waiting for you.') : `Killed: ${kills}.`;
-      out.push({ title: `${boss ? '† ' : ''}${name}`, text: `${desc}  ${moves}  ${tail}`, color });
-    };
-    for (const d of Object.values(ENEMIES)) add(d.id, d.name, d.desc, d.color, false);
-    for (const b of Object.values(BOSSES)) add(b.id, b.name, `${b.title}. ${b.intro}`, b.color, true);
+  bestiary(): JournalEntry[] {
+    const out: JournalEntry[] = [];
+    for (const d of Object.values(ENEMIES)) {
+      if (!this.flags.has(`seen:${d.id}`)) continue;
+      const moves = (MOVES[d.id] ?? []).map((m) => `• ${m}`).join('  ');
+      out.push({ title: d.name, glyph: d.glyph, group: 'CREATURES', color: d.color, text: `${d.desc}  ${moves}  Killed: ${this.counters[`kill:${d.id}`] ?? 0}.` });
+    }
+    // the four bosses always have a place, even before you meet them
+    DUNGEONS.forEach((dun) => {
+      const b = BOSSES[dun.boss];
+      if (!this.flags.has(`seen:${b.id}`)) {
+        out.push({ title: '? ? ?', glyph: '?', group: 'BOSSES', color: 0x4a4438, unknown: true, text: `Something vast waits at the bottom of ${dun.name}. You have not seen it yet.` });
+        return;
+      }
+      const moves = (MOVES[b.id] ?? []).map((m) => `• ${m}`).join('  ');
+      out.push({
+        title: b.name, glyph: BOSS_GLYPH[b.id], group: 'BOSSES', color: b.color,
+        text: `${b.title}. ${b.intro}  ${moves}  ${this.bossDead(b.id) ? 'Destroyed.' : 'Still waiting for you.'}`,
+      });
+    });
     return out;
+  }
+
+  /** Creatures currently in view, grouped: for the sidebar's IN SIGHT legend. */
+  inSight(): { glyph: string; name: string; color: number; n: number }[] {
+    const m = new Map<string, { glyph: string; name: string; color: number; n: number }>();
+    for (const e of this.enemies) {
+      if (e.dead || this.vis[this.idx(e.x, e.y)] <= 0) continue;
+      const key = e.ally ? 'thrall' : e.boss ?? (e.elite ? `elite:${e.id}` : e.def);
+      const d = ENEMIES[e.def];
+      const look = e.ally
+        ? { glyph: 'z', name: 'Thrall', color: 0x90e0a0 }
+        : e.boss
+          ? { glyph: BOSS_GLYPH[e.boss], name: BOSSES[e.boss].name, color: BOSSES[e.boss].color }
+          : { glyph: d.glyph, name: e.elite ? e.name : d.name, color: e.elite ? 0xffd040 : d.color };
+      const cur = m.get(key);
+      if (cur) cur.n++;
+      else m.set(key, { ...look, n: 1 });
+    }
+    return [...m.values()].sort((a, b) => b.n - a.n);
   }
 
   // ================================================================ UI helpers

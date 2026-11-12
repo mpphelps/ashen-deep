@@ -522,7 +522,7 @@ function grabStory(): void {
 // ---------------------------------------------------------------- the bestiary
 {
   const h = fresh(31);
-  ok(h.bestiary().length === 0, 'the bestiary starts empty');
+  ok(h.bestiary().filter((b) => !b.unknown).length === 0 && h.bestiary().filter((b) => b.group === 'BOSSES').length === 4, 'the bestiary starts empty, with four unknown boss slots');
   const e = duel(h, 'ghoul');
   h.updateFov();
   tick(h, 6);
