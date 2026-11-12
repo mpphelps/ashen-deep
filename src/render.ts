@@ -11,8 +11,8 @@ import { talentList, SKILL_KEYS } from './skills.ts';
 import { hash2 } from './rng.ts';
 
 const BG = 0x070606;
-const SW = 30; // sidebar width
-const LH = 6; // log height
+export const SW = 30; // sidebar width
+export const LH = 6; // log height
 const BORDER = 0x4a3a2c;
 const DIM = 0x6a6458;
 const TEXT = 0xc8c0b0;
@@ -64,7 +64,9 @@ export function render(g: Game, s: Screen): void {
 // ================================================================== world
 function drawGame(g: Game, s: Screen): void {
   const VW = s.w - SW, VH = s.h - LH;
+  s.layer = 1;
   drawWorld(g, s, VW, VH);
+  s.layer = 0;
   drawSidebar(g, s, VW);
   drawLog(g, s, VW, VH);
   if (g.bossActive) drawBossBar(g, s, VW, VH);
@@ -936,7 +938,9 @@ function drawConfirm(s: Screen): void {
 function drawDeath(g: Game, s: Screen): void {
   const VW = s.w - SW, VH = s.h - LH;
   const a = Math.min(1, g.deadT / 30);
+  s.layer = 1;
   for (let yy = 0; yy < VH; yy++) for (let xx = 0; xx < VW; xx++) s.put(xx, yy, s.ch[yy * s.w + xx], scale(s.fg[yy * s.w + xx], 1 - 0.7 * a), mix(s.getBg(xx, yy), 0x000000, 0.7 * a));
+  s.layer = 0;
   const y = (VH >> 1) - 2;
   for (let xx = 0; xx < VW; xx++) for (let yy = y - 1; yy <= y + 3; yy++) s.put(xx, yy, ' ', 0, mix(0x000000, 0x1a0000, a));
   const t = 'T H O U   A R T   F A L L E N';
@@ -1019,7 +1023,7 @@ function drawTitle(g: Game, s: Screen): void {
     const t = sel ? `▶  ${o}  ◀` : o;
     s.text((s.w - t.length) >> 1, y0 + 11 + k * 2, t, sel ? 0xffd080 : 0x8a8070);
   });
-  const foot = '↑↓ choose · Enter select · best in a 120x34+ terminal';
+  const foot = g.webBuild ? '↑↓ choose · Enter select · sound starts with your first key press' : '↑↓ choose · Enter select · best in a 120x34+ terminal';
   s.text((s.w - foot.length) >> 1, s.h - 2, foot, 0x4a4238);
 }
 

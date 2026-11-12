@@ -27,6 +27,9 @@ export class Screen {
   pfg: Int32Array = new Int32Array(0);
   pbg: Int32Array = new Int32Array(0);
   full = true;
+  /** 0 = interface, 1 = game world, 2 = never drawn this frame. Each cell remembers which layer last drew it. */
+  layer = 0;
+  layers: Uint8Array = new Uint8Array(0);
 
   resize(w: number, h: number): void {
     if (w === this.w && h === this.h) return;
@@ -39,6 +42,7 @@ export class Screen {
     this.pch = new Array(n).fill('');
     this.pfg = new Int32Array(n).fill(-1);
     this.pbg = new Int32Array(n).fill(-1);
+    this.layers = new Uint8Array(n);
     this.full = true;
   }
 
@@ -46,6 +50,7 @@ export class Screen {
     this.ch.fill(' ');
     this.fg.fill(0xffffff);
     this.bg.fill(bg);
+    this.layers.fill(2);
   }
 
   put(x: number, y: number, c: string, fg: number, bg?: number): void {
@@ -54,6 +59,7 @@ export class Screen {
     this.ch[i] = c;
     this.fg[i] = fg;
     if (bg !== undefined) this.bg[i] = bg;
+    this.layers[i] = this.layer;
   }
 
   getBg(x: number, y: number): number {

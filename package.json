@@ -1,20 +1,23 @@
 {
   "name": "ashen-deep",
   "version": "1.0.0",
-  "description": "A dark fantasy terminal ARPG: souls-like combat, Zelda-style puzzles, Diablo loot.",
+  "description": "A dark fantasy ARPG for the terminal and the browser: souls-like combat, Zelda-style puzzles, Diablo loot.",
   "type": "module",
   "private": true,
   "scripts": {
     "start": "node --disable-warning=ExperimentalWarning src/main.ts",
     "test": "node --disable-warning=ExperimentalWarning test/sim.ts && node --disable-warning=ExperimentalWarning test/mechanics.ts && node --disable-warning=ExperimentalWarning test/audio.ts",
     "typecheck": "tsc --noEmit",
-    "screenshots": "node --disable-warning=ExperimentalWarning tools/screenshots.ts"
+    "screenshots": "node --disable-warning=ExperimentalWarning tools/screenshots.ts",
+    "web": "node --disable-warning=ExperimentalWarning tools/web.ts --serve",
+    "build:web": "node --disable-warning=ExperimentalWarning tools/web.ts"
   },
   "engines": {
     "node": ">=23.6"
   },
   "devDependencies": {
     "@types/node": "^24.19.2",
+    "esbuild": "^0.25.12",
     "typescript": "5.9"
   }
 }

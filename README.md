@@ -1,15 +1,26 @@
 # The Ashen Deep
 
-A dark-fantasy action RPG that runs entirely in your terminal. It has an open world to explore,
-four dungeons, a hub town full of people who hate you, and a story you piece together from what
-the dead leave behind. The combat is real-time and souls-like, the world and dungeons are
+A dark-fantasy action RPG you can play **in your terminal or in your browser**. It has an open world
+to explore, four dungeons, a hub town full of people who hate you, and a story you piece together
+from what the dead leave behind. The combat is real-time and souls-like, the world and dungeons are
 Zelda-style puzzles, and the loot is Diablo-style. It is written in TypeScript with
-**zero runtime dependencies**. Even the music and sound effects are synthesized in code.
+**zero runtime dependencies**. The music, the sound effects and even the pixel art are generated in code.
 
 > Content warning: this is a very dark game. It deals with grief, the death of a child,
 > cannibalism, self-harm and religious horror.
 
 ![Title screen](docs/screenshots/1-title.png)
+
+## Two ways to play
+
+One game core, two renderers. Everything works the same in both: every quest, boss, puzzle, talent and save system.
+
+| In the terminal: `npm start` | In the browser: `npm run web` |
+|---|---|
+| ![Terminal: Hollowmere](docs/screenshots/2-hollowmere.png) | ![Browser: Hollowmere](docs/screenshots/browser-town.png) |
+| ![Terminal: the cemetery](docs/screenshots/3-cemetery.png) | ![Browser: the cemetery](docs/screenshots/browser-cemetery.png) |
+| ![Terminal: the Choir](docs/screenshots/5-choir.png) | ![Browser: the Choir](docs/screenshots/browser-choir.png) |
+| Every creature, wall and item is a colored character, lit by your torch. Runs in any truecolor terminal. | The same world in pixel-art sprites drawn in code. Characters glide between tiles, attacks and wind-ups are animated, light and flame glow through the dark, and held keys move smoothly. |
 
 ## The story, without spoilers
 
@@ -20,7 +31,7 @@ years. Seven years ago they threw you in. Everyone remembers why except you. The
 The truth comes out a piece at a time: in what NPCs will and won't say, in items found in the
 dark, in what the bosses scream as they die.
 
-## Screenshots
+## More screenshots (terminal)
 
 | | |
 |---|---|
@@ -37,13 +48,17 @@ dark, in what the bosses scream as they die.
 
 ## Play
 
-Requires **Node 23.6+**, which runs TypeScript directly, so there is no build step. You also need a truecolor terminal. Windows Terminal works great, and 120×34 or larger is ideal.
+Requires **Node 23.6+**, which runs TypeScript directly. For the terminal version you need a truecolor terminal: Windows Terminal works great, and 120×34 or larger is ideal. For the browser version, any modern browser works (tested in Chrome).
 
 ```bash
 git clone https://github.com/mpphelps/ashen-deep.git
 cd ashen-deep
-npm start
+npm install          # dev tools only: the TypeScript checker and the browser bundler
+npm start            # play in the terminal
+npm run web          # play in the browser (builds, serves on localhost:8187, and opens it)
 ```
+
+Saves are separate: the terminal version saves to `~/.ashen-deep-save.json`, and the browser version saves in the browser's local storage.
 
 | Key | Action |
 |---|---|
@@ -145,6 +160,8 @@ Progress saves at bonfires and doorways to `~/.ashen-deep-save.json`.
 npm test             # world gates, dungeon gating, puzzle solvability, bot playthroughs, story path, audio
 npm run typecheck    # tsc --noEmit
 npm run screenshots  # regenerate docs/screenshots
+npm run build:web    # build the browser version into web/
+node tools/sprite-sheet.ts   # render every sprite to docs/sprite-sheet.png
 ```
 
 The test suite checks:
@@ -165,3 +182,5 @@ The test suite checks:
 | `src/loot.ts` | items, affixes, uniques, loot tables, stats |
 | `src/render.ts` | lighting, HUD, dialogue, menus |
 | `src/audio/` | synthesizer, sound design, platform playback |
+| `src/web/` | browser version: sprite art (`art.ts`), sprite renderer, Web Audio, entry point |
+| `src/platform.ts` | the seam between the game and the outside world (saves) |

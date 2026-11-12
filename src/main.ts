@@ -2,6 +2,11 @@
 import { Game } from './game.ts';
 import { Screen } from './term.ts';
 import { render } from './render.ts';
+import { KEYMAP } from './keys.ts';
+import { setSaveStore } from './platform.ts';
+import { fileStore } from './node-store.ts';
+
+setSaveStore(fileStore);
 import { Audio, ensureCache, AUDIO_MODE_NAMES } from './audio/audio.ts';
 
 const out = process.stdout;
@@ -22,14 +27,6 @@ if (!process.argv.includes('--no-audio')) {
   if (process.argv.includes('--mute')) audio.mode = 2;
 }
 game.audioLabel = AUDIO_MODE_NAMES[audio.mode];
-
-const KEYMAP: Record<string, string> = {
-  w: 'up', s: 'down', a: 'left', d: 'right',
-  j: 'attack', x: 'attack', k: 'heavy', c: 'heavy',
-  ' ': 'roll', q: 'parry', l: 'parry', f: 'flask', e: 'interact',
-  i: 'inv', '\t': 'inv', m: 'map', '?': 'help', h: 'help', r: 'tool', b: 'journal', t: 'talents', u: 'skill1', o: 'skill2', p: 'skill3',
-  '\r': 'enter', '\n': 'enter',
-};
 
 function parseKeys(data: string): [string, string][] {
   const keys: [string, string][] = [];

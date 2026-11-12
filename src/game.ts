@@ -1,7 +1,5 @@
 // Core game state + simulation (20 ticks per second).
-import * as fs from 'node:fs';
-import * as os from 'node:os';
-import * as path from 'node:path';
+import { saveStore } from './platform.ts';
 import { RNG, hash2 } from './rng.ts';
 import {
   T, DIRS, DIRS8, SLOTS, TOOLS,
@@ -25,7 +23,6 @@ const PARRY_TOTAL = 14;
 const PARRY_WINDOW = 6;
 export const HOOK_RANGE = 7;
 const RESONANCE = 260;
-const SAVE_PATH = path.join(os.homedir(), '.ashen-deep-save.json');
 
 export type Mode =
   | 'title' | 'play' | 'inv' | 'bonfire' | 'read' | 'dead' | 'map' | 'help' | 'confirmQuit'
@@ -153,6 +150,7 @@ export class Game {
   embers: { x: number; y: number; v: number; c: number }[] = [];
   nextId = 1;
   saveEnabled = true;
+  webBuild = false; // running in a browser tab
   lastGlance = 0;
   sounds: string[] = [];
   audioLabel = '';
@@ -502,8 +500,7 @@ export class Game {
     try {
       this.floorKeys[this.floor.key] = this.player.keys;
       const p = { ...this.player, act: null };
-      fs.writeFileSync(
-        SAVE_PATH,
+      saveStore().write(
         JSON.stringify({
           v: 2, seed: this.seed, player: p, deaths: this.deaths, kills: this.kills, flags: [...this.flags], quests: this.quests,
           questItems: this.questItems, lore: this.lore, counters: this.counters, floorKeys: this.floorKeys,
@@ -517,8 +514,8 @@ export class Game {
 
   static hasSave(): boolean {
     try {
-      if (!fs.existsSync(SAVE_PATH)) return false;
-      return JSON.parse(fs.readFileSync(SAVE_PATH, 'utf8')).v === 2;
+      const raw = saveStore().read();
+      return !!raw && JSON.parse(raw).v === 2;
     } catch {
       return false;
     }
@@ -526,7 +523,8 @@ export class Game {
 
   load(): boolean {
     try {
-      const d = JSON.parse(fs.readFileSync(SAVE_PATH, 'utf8'));
+      const d = JSON.parse(saveStore().read() ?? 'null');
+      if (!d) return false;
       if (d.v !== 2) return false;
       this.seed = d.seed >>> 0;
       this.rng = new RNG(hash2(this.seed, 0xabc + (d.kills ?? 0)));
@@ -663,7 +661,8 @@ export class Game {
   titleOptions(): string[] {
     const o: string[] = [];
     if (this.saveEnabled && Game.hasSave()) o.push('Continue');
-    o.push('New Descent', 'How to Play', 'Quit');
+    o.push('New Descent', 'How to Play');
+    if (!this.webBuild) o.push('Quit');
     return o;
   }
 
