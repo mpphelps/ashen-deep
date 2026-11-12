@@ -7,6 +7,7 @@ import { ENEMIES, BOSSES } from './data.ts';
 const sign = (n: number) => (n > 0 ? 1 : n < 0 ? -1 : 0);
 
 function tickCommon(e: Enemy): void {
+  if (e.blind > 0) e.blind--;
   if (e.flash > 0) e.flash--;
   if (e.alertT > 0) e.alertT--;
   if (e.riposte > 0) e.riposte--;
@@ -146,7 +147,8 @@ export function updateEnemy(g: Game, e: Enemy): void {
       const facing = e.face.x * dx + e.face.y * dy > 0;
       chance *= facing ? 2.5 : 0.4;
     } else if (cheb <= 2) chance = 0.03;
-    const notice = (g.noise > 0 && cheb <= 6) || g.rng.chance(chance);
+    if (g.player.talents.includes('shadow')) chance *= 0.5;
+    const notice = e.blind <= 0 && ((g.noise > 0 && cheb <= 6) || g.rng.chance(chance));
     if (notice) {
       e.aware = true;
       e.state = 'chase';

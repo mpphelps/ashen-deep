@@ -16,6 +16,7 @@ import {
   RARITY_COLORS, RARITY_NAMES, INV_MAX, UNIQUES, type Stats, type Drop,
 } from './loot.ts';
 import { updateEnemy, updateBoss } from './ai.ts';
+import { useSkill, tickSkills, skillDamageMult, shoot, resolveSkill, updateThrall, talentInput, respec } from './skills.ts';
 import { computeFov } from './fov.ts';
 import { DUNGEONS, NPCS, LORE, QUESTS, QUEST_ITEMS, TOOL_INFO, TOOL_TILE_NAME, type NpcDef, type Stash } from './story.ts';
 
@@ -28,7 +29,7 @@ const SAVE_PATH = path.join(os.homedir(), '.ashen-deep-save.json');
 
 export type Mode =
   | 'title' | 'play' | 'inv' | 'bonfire' | 'read' | 'dead' | 'map' | 'help' | 'confirmQuit'
-  | 'dialog' | 'shop' | 'journal' | 'travel' | 'ending';
+  | 'dialog' | 'shop' | 'journal' | 'travel' | 'ending' | 'talents';
 
 export interface Msg {
   text: string;
@@ -81,6 +82,8 @@ function newPlayer(): Player {
     eq: { weapon: null, helm: null, chest: null, ring: null, amulet: null },
     act: null, iframes: 0, moveCd: 0, flash: 0, poison: 0, burn: 0,
     tools: [], tool: -1, salts: 0, lastSafe: { x: 0, y: 0 },
+    talents: [], talentPoints: 1, slots: [null, null, null], cds: {}, guard: false,
+    buffs: { warcry: 0, bone: 0, boneT: 0, aim: 0 },
   };
 }
 
@@ -117,6 +120,8 @@ export class Game {
   shopSel = 0;
   journalTab = 0;
   journalSel = 0;
+  talentCol = 0;
+  talentRow = 0;
   travelSel = 0;
   vis: Float32Array = new Float32Array(1);
   fovMask: Uint8Array = new Uint8Array(1);
@@ -357,7 +362,7 @@ export class Game {
 
   enterLocation(key: string, at?: Vec): void {
     if (this.floor) {
-      this.floor.liveEnemies = this.enemies.filter((e) => !e.dead && !e.boss);
+      this.floor.liveEnemies = this.enemies.filter((e) => !e.dead && !e.boss && !e.ally);
       this.floorKeys[this.floor.key] = this.player.keys;
       const fd = this.floor.lockedDoor;
       if (this.inBounds(fd.x, fd.y) && this.tileAt(fd.x, fd.y) === T.FOG) this.floor.tiles[this.idx(fd.x, fd.y)] = T.OPEN;
@@ -451,6 +456,7 @@ export class Game {
       speed: d.speed, state: 'idle', t: 0, cd: 0, moveT: this.rng.int(0, d.speed), face: { ...this.rng.pick(DIRS) },
       aware: false, lostT: 0, flash: 0, alertT: 0, burn: 0, bleed: 0, elite: null, combo: 0, phase: 0, riposte: 0,
       wmult: 1, birthCd: 0, dead: false, ashes: Math.round(d.ashes * (1 + 0.18 * (tier - 1))), tier, flag: null,
+      ally: false, venom: 0, blind: 0,
     };
     if (elite) {
       const mods = this.rng.shuffle(ELITE_MODS.slice()).slice(0, this.rng.int(1, 2));
@@ -478,7 +484,7 @@ export class Game {
       hp: b.hp, maxHp: b.hp, dmg: b.dmg, poise: b.poise, maxPoise: b.poise,
       speed: b.speed, state: 'idle', t: 0, cd: 20, moveT: 0, face: { x: 0, y: 1 }, aware: true, lostT: 0, flash: 0,
       alertT: 0, burn: 0, bleed: 0, elite: null, combo: 0, phase: 0, riposte: 0, wmult: 1, birthCd: 60, dead: false,
-      ashes: b.ashes, tier: this.floor.depth, flag: null,
+      ashes: b.ashes, tier: this.floor.depth, flag: null, ally: false, venom: 0, blind: 0,
     };
   }
 
@@ -582,6 +588,7 @@ export class Game {
         if (key === 'map') { this.mode = 'map'; return; }
         if (key === 'help') { this.mode = 'help'; this.helpReturn = 'play'; return; }
         if (key === 'journal') { this.mode = 'journal'; this.journalSel = 0; return; }
+        if (key === 'talents') { this.mode = 'talents'; return; }
         if (key === 'esc') { this.mode = 'confirmQuit'; return; }
         if (raw >= '1' && raw <= '4') {
           const t = TOOLS[+raw - 1];
@@ -592,7 +599,7 @@ export class Game {
           }
           return;
         }
-        if (['up', 'down', 'left', 'right', 'attack', 'heavy', 'roll', 'parry', 'flask', 'interact', 'tool'].includes(key))
+        if (['up', 'down', 'left', 'right', 'attack', 'heavy', 'roll', 'parry', 'flask', 'interact', 'tool', 'skill1', 'skill2', 'skill3'].includes(key))
           this.buf = { k: key, t: this.tick };
         return;
       }
@@ -603,6 +610,7 @@ export class Game {
       case 'shop': return this.shopInput(key);
       case 'journal': return this.journalInput(key);
       case 'ending': return this.endingInput(key, raw);
+      case 'talents': return talentInput(this, key, raw);
       case 'read': {
         const m = this.modal;
         if (m?.kind === 'confirm') {
@@ -713,7 +721,7 @@ export class Game {
   }
 
   bonfireOptions(): string[] {
-    return ['Vigor', 'Endurance', 'Strength', 'Dexterity', 'Travel', 'Leave'];
+    return ['Vigor', 'Endurance', 'Strength', 'Dexterity', 'Talents', 'Forget talents', 'Travel', 'Leave'];
   }
 
   bonfireInput(key: string): void {
@@ -723,8 +731,10 @@ export class Game {
     if (key === 'up') { this.bonSel = (this.bonSel + n - 1) % n; this.sfx('menu'); }
     else if (key === 'down') { this.bonSel = (this.bonSel + 1) % n; this.sfx('menu'); }
     else if (key === 'enter' || key === 'interact') {
-      if (this.bonSel === 5) { this.mode = 'play'; return; }
-      if (this.bonSel === 4) { this.mode = 'travel'; this.travelSel = 0; return; }
+      if (this.bonSel === 7) { this.mode = 'play'; return; }
+      if (this.bonSel === 6) { this.mode = 'travel'; this.travelSel = 0; return; }
+      if (this.bonSel === 5) { respec(this); return; }
+      if (this.bonSel === 4) { this.mode = 'talents'; return; }
       const cost = levelCost(p.level);
       if (p.ashes < cost) { this.log('You lack the ashes. The flame is unimpressed.', 0x8a8478); this.sfx('locked'); return; }
       p.ashes -= cost;
@@ -734,7 +744,8 @@ export class Game {
       this.recalc();
       p.hp = this.stats.maxHp;
       p.sta = this.stats.maxSta;
-      this.log(`You feel stronger. Level ${p.level}.`, 0xffd080);
+      p.talentPoints++;
+      this.log(`You feel stronger. Level ${p.level}. +1 talent point (T).`, 0xffd080);
       this.sfx('levelup');
       this.save();
     }
@@ -968,6 +979,7 @@ export class Game {
     if (this.shake > 0) this.shake--;
     if (this.noise > 0) this.noise--;
     if (this.targetT > 0 && --this.targetT <= 0) this.target = null;
+    tickSkills(this);
     if (this.resonance > 0) {
       this.resonance--;
       if (this.resonance === 50) this.log("The bell's silence is fading...", 0xb0a8d0);
@@ -992,7 +1004,8 @@ export class Game {
       if (e.dead) continue;
       // the overworld is big: far-off enemies sleep
       if (this.floor.kind === 'world' && !e.aware && Math.max(Math.abs(e.x - p.x), Math.abs(e.y - p.y)) > 34) continue;
-      if (e.boss) updateBoss(this, e);
+      if (e.ally) updateThrall(this, e);
+      else if (e.boss) updateBoss(this, e);
       else updateEnemy(this, e);
       if (this.mode !== 'play') return;
     }
@@ -1038,6 +1051,9 @@ export class Game {
       case 'flask': this.drink(); break;
       case 'interact': this.interact(); break;
       case 'tool': this.useTool(); break;
+      case 'skill1': useSkill(this, 0); break;
+      case 'skill2': useSkill(this, 1); break;
+      case 'skill3': useSkill(this, 2); break;
     }
   }
 
@@ -1178,6 +1194,15 @@ export class Game {
     const nx = p.x + dir.x, ny = p.y + dir.y;
     if (!this.inBounds(nx, ny)) return;
     const e = this.enemyAt(nx, ny);
+    if (e && e.ally) {
+      // swap places with your own thrall
+      e.x = p.x;
+      e.y = p.y;
+      p.x = nx;
+      p.y = ny;
+      p.moveCd = 4;
+      return;
+    }
     if (e) {
       this.startAttack(false);
       return;
@@ -1242,7 +1267,7 @@ export class Game {
     }
     p.x = nx;
     p.y = ny;
-    p.moveCd = 3;
+    p.moveCd = p.guard ? 6 : 3;
     this.onPlayerEnter();
   }
 
@@ -1372,6 +1397,7 @@ export class Game {
   startAttack(heavy: boolean): void {
     const p = this.player;
     if (p.act) return;
+    p.guard = false;
     if (p.sta <= 0) {
       this.log('Too exhausted to swing.', 0x808060);
       return;
@@ -1386,6 +1412,7 @@ export class Game {
   startRoll(): void {
     const p = this.player;
     if (p.act) return;
+    p.guard = false;
     if (p.sta <= 0) {
       this.log('Too exhausted to roll.', 0x808060);
       return;
@@ -1399,6 +1426,7 @@ export class Game {
   startParry(): void {
     const p = this.player;
     if (p.act || p.sta <= 0) return;
+    p.guard = false;
     this.spendSta(10);
     p.act = { kind: 'parry', t: PARRY_TOTAL, dir: { ...p.face } };
   }
@@ -1446,6 +1474,9 @@ export class Game {
         break;
       case 'recover':
         if (a.t <= 0) p.act = null;
+        break;
+      case 'skill':
+        if (a.t <= 0) resolveSkill(this, a.skill!, a.dir);
         break;
     }
   }
@@ -1709,13 +1740,20 @@ export class Game {
   resolveAttack(heavy: boolean, dir: Vec): void {
     const p = this.player;
     const b = weaponBase(p.eq.weapon);
+    if (b.pattern === 'bow') {
+      // a drawn heavy shot hits harder and passes through one body
+      shoot(this, dir, { mult: heavy ? 1.8 : 1, pierce: heavy ? 1 : 0 });
+      p.act = { kind: 'recover', t: Math.round(b.rec * (heavy ? 1.3 : 1)), dir };
+      this.noise = 3;
+      return;
+    }
     const tiles = this.attackTiles(b.pattern, p.x, p.y, dir, heavy);
     const slash = dir.x !== 0 ? '|' : '─';
     const hit = new Set<Enemy>();
     for (const t of tiles) {
       if (!this.isOpaque(t.x, t.y)) this.addFx(t.x, t.y, heavy ? '#' : slash, heavy ? 0xffe0a0 : 0xffffff, heavy ? 3 : 2);
       const e = this.enemyAt(t.x, t.y);
-      if (e) hit.add(e);
+      if (e && !e.ally) hit.add(e);
       const o = this.blockObjAt(t.x, t.y);
       if (o && o.kind === 'urn') this.breakUrn(o);
       if (heavy && this.tileAt(t.x, t.y) === T.CRACKED) {
@@ -1729,11 +1767,12 @@ export class Game {
     if (heavy && this.stats.uniques.has('mourning')) {
       for (const d of DIRS8) {
         const e = this.enemyAt(p.x + d.x, p.y + d.y);
-        if (e) hit.add(e);
+        if (e && !e.ally) hit.add(e);
         this.addFx(p.x + d.x, p.y + d.y, '*', 0xff9040, 3);
       }
     }
     for (const e of hit) this.playerHit(e, heavy, b);
+    if (b.id === 'dagger' && p.talents.includes('twin')) for (const e of hit) if (!e.dead) this.playerHit(e, heavy, b, 0.6);
     if (this.stats.uniques.has('tithe')) p.hp = Math.max(1, p.hp - Math.round(this.stats.maxHp * 0.02));
     if (this.stats.uniques.has('scourge') && hit.size) p.hp = Math.max(1, p.hp - hit.size);
     const rec = Math.round(b.rec * (heavy ? 1.4 : 1));
@@ -1741,7 +1780,7 @@ export class Game {
     this.noise = 3;
   }
 
-  playerHit(e: Enemy, heavy: boolean, b: ReturnType<typeof weaponBase>): void {
+  playerHit(e: Enemy, heavy: boolean, b: ReturnType<typeof weaponBase>, extra = 1, forceCrit = false): void {
     const p = this.player;
     const st = this.stats;
     const it = p.eq.weapon;
@@ -1750,18 +1789,19 @@ export class Game {
     let mult = 1 + st.dmgPct / 100 + scaleBonus(b, p);
     if (st.uniques.has('grudge')) mult += 1 - p.hp / st.maxHp;
     if (heavy) mult *= 1.8;
+    mult *= extra * skillDamageMult(this);
     dmg *= mult;
     let label = '';
     let crit = false;
     const lethe = st.uniques.has('lethe');
     if (e.riposte > 0 && !e.boss) {
-      dmg *= lethe ? 6 : 3;
+      dmg *= (lethe ? 2 : 1) * (p.talents.includes('parrymaster') ? 4 : 3);
       label = 'RIPOSTE';
       e.riposte = 0;
     } else if (!e.boss && e.state === 'idle' && !e.aware) {
-      dmg *= lethe ? 5 : 2.5;
+      dmg *= (lethe ? 2 : 1) * (p.talents.includes('shadow') ? 3.5 : 2.5);
       label = 'BACKSTAB';
-    } else if (this.rng.chance(st.crit)) {
+    } else if (forceCrit || this.rng.chance(st.crit)) {
       dmg *= st.critMult;
       crit = true;
     }
@@ -1775,8 +1815,15 @@ export class Game {
     e: Enemy, dmg: number, poise: number,
     o: { heavy?: boolean; crit?: boolean; label?: string; fromPlayer?: boolean } = {},
   ): void {
-    if (e.dead) return;
+    if (e.dead || (e.ally && o.fromPlayer)) return;
     const p = this.player;
+    if (o.fromPlayer && p.talents.includes('cull') && e.hp <= e.maxHp * 0.2) {
+      if (!e.boss) {
+        dmg = e.hp + 1;
+        o.label = o.label || 'CULL';
+      } else dmg *= 1.4;
+    }
+    if (o.fromPlayer && p.talents.includes('venom')) e.venom = 100;
     if (e.def === 'knight' && !e.boss && e.state !== 'stagger' && o.fromPlayer && !o.heavy && !o.label) {
       const tx = sign(p.x - e.x), ty = sign(p.y - e.y);
       if (tx === e.face.x && ty === e.face.y) {
@@ -1850,6 +1897,11 @@ export class Game {
   killEnemy(e: Enemy, noExplode = false): void {
     if (e.dead) return;
     e.dead = true;
+    if (e.ally) {
+      this.addFx(e.x, e.y, '∙', 0x9ad0a0, 6);
+      return;
+    }
+    if (this.player.talents.includes('leech')) this.player.hp = Math.min(this.stats.maxHp, this.player.hp + this.stats.maxHp * 0.05);
     if (this.target === e) this.target = null;
     this.teles = this.teles.filter((tl) => tl.owner !== e || tl.persist);
     const p = this.player;
@@ -1976,7 +2028,7 @@ export class Game {
   // ================================================================ damage to player
   hurtPlayer(
     dmg: number,
-    o: { owner?: Enemy | null; parryable?: boolean; poison?: boolean; burn?: boolean; env?: boolean; unavoidable?: boolean } = {},
+    o: { owner?: Enemy | null; parryable?: boolean; poison?: boolean; burn?: boolean; env?: boolean; unavoidable?: boolean; from?: Vec } = {},
   ): 'dodge' | 'parry' | 'hit' {
     const p = this.player;
     const st = this.stats;
@@ -1984,7 +2036,8 @@ export class Game {
       if (!o.env) this.addFx(p.x, p.y - 1, 'dodge', 0x9090a0, 5);
       return 'dodge';
     }
-    if (p.act?.kind === 'parry' && p.act.t > PARRY_TOTAL - PARRY_WINDOW - 1 && o.parryable && o.owner && !o.owner.boss) {
+    const window = PARRY_WINDOW + (p.talents.includes('parrymaster') ? 3 : 0);
+    if (p.act?.kind === 'parry' && p.act.t > PARRY_TOTAL - window - 1 && o.parryable && o.owner && !o.owner.boss) {
       this.staggerEnemy(o.owner, 50);
       o.owner.riposte = 50;
       this.log(`PARRY! ${o.owner.name} reels. Strike now for a riposte!`, 0x60e0ff);
@@ -1997,6 +2050,36 @@ export class Game {
     if (o.burn && st.uniques.has('ember')) return 'hit';
     let d = dmg * (100 / (100 + st.armor));
     if (p.act?.kind === 'parry') d *= 1.15;
+    if (p.talents.includes('laststand') && p.hp < st.maxHp * 0.3) d *= 0.65;
+    // the shield: frontal blows are paid for in stamina instead of blood
+    const from = o.from ?? (o.owner ? { x: o.owner.x, y: o.owner.y } : null);
+    if (p.guard && from && !o.env && (from.x - p.x) * p.face.x + (from.y - p.y) * p.face.y > 0) {
+      const blocked = d * (o.owner?.boss ? 0.5 : 0.75);
+      if (p.sta >= blocked * 0.8) {
+        d -= blocked;
+        this.spendSta(blocked * 0.8);
+        this.sfx('clank');
+        this.addFx(p.x + p.face.x, p.y + p.face.y, ']', 0xd0a868, 4);
+      } else {
+        p.guard = false;
+        p.act = { kind: 'recover', t: 18, dir: p.face };
+        this.spendSta(p.sta);
+        this.log('Your guard breaks!', 0xff8060);
+      }
+    }
+    if (p.buffs.bone > 0) {
+      const absorb = Math.min(p.buffs.bone, d);
+      p.buffs.bone -= absorb;
+      d -= absorb;
+      if (p.buffs.bone <= 0) {
+        p.buffs.boneT = 0;
+        this.log('The bone armor shatters.', 0x9ad0a0);
+      }
+    }
+    if (d < 0.5) {
+      this.addFx(p.x, p.y - 1, 'blocked', 0xd0c8a0, 5);
+      return 'hit';
+    }
     const dd = Math.max(1, Math.round(d));
     p.hp -= dd;
     p.flash = 4;
@@ -2361,7 +2444,7 @@ export class Game {
       if (t.owner && t.owner.dead && !t.persist) continue;
       if (t.dmg > 0) {
         if (t.tiles.some((v) => v.x === p.x && v.y === p.y)) {
-          this.hurtPlayer(t.dmg, { owner: t.owner, parryable: t.parryable, poison: t.poison, burn: t.burn });
+          this.hurtPlayer(t.dmg, { owner: t.owner, parryable: t.parryable, poison: t.poison, burn: t.burn, from: t.owner ? { x: t.owner.x, y: t.owner.y } : undefined });
           if (this.mode !== 'play') return;
         }
         if (t.hitsEnemies) {
@@ -2387,11 +2470,24 @@ export class Game {
         pr.y += pr.vy / 2;
         const tx = Math.round(pr.x), ty = Math.round(pr.y);
         if (this.isOpaque(tx, ty) || this.blockObjAt(tx, ty)) {
+          if (pr.friendly) {
+            const o = this.blockObjAt(tx, ty);
+            if (o?.kind === 'urn') this.breakUrn(o);
+          }
           pr.life = 0;
           break;
         }
+        if (pr.friendly) {
+          const e = this.enemyAt(tx, ty);
+          if (e && !e.ally && !pr.hits!.includes(e.id)) {
+            pr.hits!.push(e.id);
+            pr.onHit?.(e);
+            if (--pr.pierce! < 0) pr.life = 0;
+          }
+          continue;
+        }
         if (tx === p.x && ty === p.y) {
-          const r = this.hurtPlayer(pr.dmg, { parryable: false });
+          const r = this.hurtPlayer(pr.dmg, { parryable: false, from: { x: pr.x - pr.vx * 6, y: pr.y - pr.vy * 6 } });
           if (r !== 'dodge') pr.life = 0;
           if (this.mode !== 'play') return;
         }
@@ -2451,6 +2547,11 @@ export class Game {
       return;
     }
     for (const e of this.enemies) {
+      if (e.venom > 0 && !e.dead) {
+        e.venom -= 10;
+        this.hurtEnemy(e, e.maxHp * (e.boss ? 0.005 : 0.02), 0, {});
+        this.addFx(e.x, e.y - 1, '~', 0x90e040, 3);
+      }
       if (e.burn > 0 && !e.dead) {
         e.burn -= 10;
         this.hurtEnemy(e, 2 + e.maxHp * (e.boss ? 0.006 : 0.03), 0, {});

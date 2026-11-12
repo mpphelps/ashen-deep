@@ -6,6 +6,7 @@ import { render } from '../src/render.ts';
 import { T, DIRS, TOOLS, type Floor, type Vec, type ToolId } from '../src/types.ts';
 import { DUNGEONS, NPCS } from '../src/story.ts';
 import { PIT } from '../src/world.ts';
+import { makeItem } from '../src/loot.ts';
 
 let failures = 0;
 function fail(msg: string): void {
@@ -193,7 +194,7 @@ function runBot(seed: number, ticks: number): void {
   const g = new Game(seed);
   g.saveEnabled = false;
   g.newGame();
-  const keys = ['up', 'down', 'left', 'right', 'attack', 'heavy', 'roll', 'parry', 'flask', 'interact', 'tool'];
+  const keys = ['up', 'down', 'left', 'right', 'attack', 'heavy', 'roll', 'parry', 'flask', 'interact', 'tool', 'skill1', 'skill2', 'skill3'];
   const route = ['world', 'd0f0', 'd0f1', 'world', 'd1f0', 'd1f1', 'd2f0', 'd2f1', 'world', 'd3f0', 'd3f1'];
   let leg = 0;
   const screen = new Screen();
@@ -208,6 +209,7 @@ function runBot(seed: number, ticks: number): void {
       case 'dialog': g.input('enter', ''); break;
       case 'shop': g.input(['down', 'enter', 'esc'][t % 3], ''); break;
       case 'journal': g.input(['right', 'down', 'esc'][t % 3], ''); break;
+      case 'talents': g.input(['right', 'down', 'enter', 'esc'][t % 4], String(1 + (t % 3))); break;
       case 'ending': g.input(t % 2 ? 'enter' : '', '1'); break;
       case 'map': case 'help': case 'confirmQuit': g.input('esc', 'n'); break;
       case 'title':
@@ -231,6 +233,25 @@ function runBot(seed: number, ticks: number): void {
       if (t % 500 === 0) g.input('inv', '');
       if (t % 700 === 0) g.input('journal', '');
       if (t === 2000) for (const tl of TOOLS) if (!p.tools.includes(tl)) p.tools.push(tl);
+      // build-swapping: every path's actives get exercised over a run
+      const builds = [
+        ['gravebolt', 'raise', 'corpse', 'leech', 'bonearmor', 'harvest'],
+        ['volley', 'pin', 'disengage', 'blackarrow', 'deadeye', 'patience'],
+        ['smoke', 'step', 'shadow', 'twin', 'venom', 'cull'],
+        ['shield', 'bash', 'warcry', 'iron', 'parrymaster', 'laststand'],
+      ];
+      if (t % 1500 === 600) {
+        const bld = builds[((t / 1500) | 0) % 4];
+        p.talents = bld.slice();
+        p.slots = bld.filter((id) => !['leech', 'deadeye', 'patience', 'shadow', 'twin', 'venom', 'cull', 'iron', 'parrymaster', 'laststand'].includes(id)).slice(0, 3);
+        p.cds = {};
+        g.recalc();
+        if (bld[0] === 'volley') {
+          p.eq.weapon = makeItem(g.rng, 4, 1, 'weapon', 'bow');
+          g.recalc();
+        }
+      }
+      if (t % 900 === 450) g.input('talents', '');
       if (t % 300 === 150 && g.floor.kind === 'world') {
         const n = g.floor.npcs[((t / 300) | 0) % g.floor.npcs.length];
         p.x = n.x;

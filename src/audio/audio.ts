@@ -9,7 +9,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { SFX, MUSIC } from './sounds.ts';
 import { toWav } from './synth.ts';
 
-const VERSION = 'v1';
+const VERSION = 'v2';
 const CACHE = path.join(os.homedir(), '.ashen-deep', 'audio', VERSION);
 
 // how many overlapping copies of each effect may play at once

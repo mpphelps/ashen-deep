@@ -1,5 +1,5 @@
 // Sound design: every effect and music track is generated procedurally.
-import { SR, buf, tone, pluck, bell, kick, snare, tom, hat, organ, reverb, normalize, declick, mtof, srand, rnd } from './synth.ts';
+import { SR, buf, tone, pluck, bell, kick, snare, tom, hat, organ, reverb, normalize, declick, decrepit, mtof, srand, rnd } from './synth.ts';
 
 type Gen = () => Float32Array;
 
@@ -377,8 +377,8 @@ export const SFX: Record<string, Gen> = {
 
 const loopBuf = (bpm: number, beats: number) => ({ b: new Float32Array(Math.round((60 / bpm) * beats * SR)), beat: 60 / bpm });
 
-function master(b: Float32Array, wet: number, peak: number): Float32Array {
-  return normalize(reverb(b, wet, 0.86, 0.4, true), peak);
+function master(b: Float32Array, wet: number, peak: number, decay = 1): Float32Array {
+  return normalize(decrepit(reverb(b, wet, 0.86, 0.4, true), decay), peak);
 }
 
 export const MUSIC: Record<string, Gen> = {
@@ -473,7 +473,7 @@ export const MUSIC: Record<string, Gen> = {
       mel.forEach((n, k) => n && bell(b, t + k * beat, mtof(n) * (1 + (rnd() - 0.5) * 0.012), 2.2, 0.07, 3.0, 0.6, true));
     });
     for (let k = 0; k < 6; k++) tone(b, rnd() * L, 0.6, 0, { wave: 'noise', lp: 600, attack: 0.3, release: 0.5, amp: 0.03 }, true);
-    return master(b, 0.55, 0.42);
+    return master(b, 0.55, 0.42, 1.8);
   },
 
   // ---------------------------------------------------- wilds: wind across dead fields, a distant bell
@@ -509,6 +509,77 @@ export const MUSIC: Record<string, Gen> = {
     return master(b, 0.7, 0.5);
   },
 
+  // ---------------------------------------------------- cemetery: a funeral organ nobody has tuned in seven years
+  cemetery: () => {
+    srand(909);
+    const { b, beat } = loopBuf(40, 32);
+    const L = b.length / SR;
+    const prog = [[47, 50, 54], [52, 55, 59], [43, 47, 50], [42, 46, 49]];
+    prog.forEach((c, i) => {
+      const t = i * 8 * beat;
+      for (const n of c) organ(b, t, 7.6 * beat, mtof(n) * (1 + (rnd() - 0.5) * 0.008), 0.028, true);
+      organ(b, t, 7.6 * beat, mtof(c[0] - 12), 0.04, true);
+    });
+    for (let k = 0; k < 8; k++) bell(b, k * 4 * beat, mtof(35), 7, 0.09, 1.4, 2.2, true);
+    for (let k = 0; k < 5; k++) tone(b, (k / 5) * L, L / 3, 0, { wave: 'noise', lp: 250 + rnd() * 300, attack: L / 8, release: L / 6, amp: 0.1 }, true);
+    for (const t of [L * 0.3, L * 0.77]) for (let k = 0; k < 2; k++) tone(b, t + k * 0.35, 0.18, 900, { wave: 'saw', sweep: 0.6, lp: 2200, decay: 0.12, amp: 0.05, vib: 30, vibDepth: 0.05 }, true);
+    return master(b, 0.6, 0.45, 1.3);
+  },
+
+  // ---------------------------------------------------- the Rotwood (overworld): breathing roots, insects, tritones
+  forest: () => {
+    srand(1010);
+    const { b, beat } = loopBuf(46, 32);
+    const L = b.length / SR;
+    for (let k = 0; k < 4; k++) {
+      const t = k * 8 * beat;
+      tone(b, t, 8 * beat, mtof(33), { wave: 'saw', lp: 180, lpEnd: 420, attack: 2, release: 2.5, amp: 0.12 }, true);
+      tone(b, t, 8 * beat, mtof(39), { wave: 'saw', lp: 160, lpEnd: 300, attack: 3, release: 2.5, amp: 0.05 }, true);
+    }
+    for (let k = 0; k < 6; k++) tone(b, rnd() * L, 0.9, 70 + rnd() * 40, { wave: 'saw', sweep: 1.3, lp: 500, vib: 9, vibDepth: 0.06, attack: 0.2, release: 0.3, amp: 0.06 }, true);
+    for (let k = 0; k < 5; k++) tone(b, rnd() * L, 3, 4200 + rnd() * 800, { vib: 28, vibDepth: 0.02, attack: 1, release: 1.5, amp: 0.008 }, true);
+    const notes = [45, 51, 46, 52, 44, 50];
+    for (let k = 0; k < 12; k++) pluck(b, (k * 2.6 + rnd()) * beat, mtof(notes[k % notes.length] + 12), 3, 0.09, 0.997, true);
+    for (let k = 0; k < Math.floor(L * 0.5); k++) tone(b, rnd() * L, 0.05, 1200 + rnd() * 900, { sweep: 0.5, decay: 0.03, amp: 0.035 }, true);
+    return master(b, 0.6, 0.45, 1.1);
+  },
+
+  // ---------------------------------------------------- the chapel heights: wind and a choir of the long dead
+  heights: () => {
+    srand(1111);
+    const { b, beat } = loopBuf(42, 32);
+    const L = b.length / SR;
+    for (let k = 0; k < 6; k++) tone(b, (k / 6) * L, L / 4, 0, { wave: 'noise', lp: 600 + rnd() * 900, lpEnd: 300, attack: L / 10, release: L / 7, amp: 0.11 }, true);
+    const prog = [[52, 59, 64, 67], [48, 54, 60, 64], [45, 52, 57, 60], [47, 54, 59, 63]];
+    prog.forEach((c, i) => {
+      const t = i * 8 * beat;
+      for (const n of c) {
+        tone(b, t, 7 * beat, mtof(n), { attack: 2.5, release: 3, amp: 0.03, vib: 4.8, vibDepth: 0.009 }, true);
+        tone(b, t, 7 * beat, mtof(n) * 1.003, { attack: 3, release: 3, amp: 0.02, vib: 5.3, vibDepth: 0.01 }, true);
+      }
+    });
+    const mel = [71, 69, 67, 66, 64, 0, 64, 66, 67, 0, 64, 63];
+    mel.forEach((n, i) => n && tone(b, (i * 2.5 + 4) * beat, 2 * beat, mtof(n), { attack: 0.5, release: 1.2, amp: 0.035, vib: 5.5, vibDepth: 0.012 }, true));
+    return master(b, 0.7, 0.45, 1.2);
+  },
+
+  // ---------------------------------------------------- the Pit: a heartbeat in the dark
+  pit: () => {
+    srand(1212);
+    const { b, beat } = loopBuf(50, 32);
+    const L = b.length / SR;
+    tone(b, 0, L, 30, { amp: 0.22, attack: 0.01, release: 0.01 }, true);
+    tone(b, 0, L, 30.8, { amp: 0.16, attack: 0.01, release: 0.01 }, true);
+    for (let k = 0; k < 16; k++) {
+      const t = k * 2 * beat;
+      tone(b, t, 0.2, 55, { sweep: 0.6, decay: 0.08, amp: 0.35 }, true);
+      tone(b, t + 0.22, 0.2, 50, { sweep: 0.6, decay: 0.08, amp: 0.22 }, true);
+    }
+    for (let k = 0; k < 4; k++) tone(b, k * 8 * beat + 3 * beat, 4 * beat, mtof(40 + [0, 1, 0, 6][k]), { wave: 'saw', lp: 600, attack: 4 * beat, release: 0.05, amp: 0.06 }, true);
+    for (let k = 0; k < 6; k++) bell(b, rnd() * L, 140 + rnd() * 60, 3, 0.04, 2.9, 4, true);
+    return master(b, 0.65, 0.5, 1.2);
+  },
+
   // ---------------------------------------------------- boss: war drums and dread (C minor, 140 bpm)
   boss: () => {
     srand(505);
@@ -535,6 +606,6 @@ export const MUSIC: Record<string, Gen> = {
         if (bar >= 8) for (const n of chords[sec]) tone(b, t, 15 * beat, mtof(n + 12), { attack: 1, release: 1, amp: 0.025, vib: 5.5, vibDepth: 0.01 }, true);
       }
     }
-    return master(b, 0.25, 0.6);
+    return master(b, 0.25, 0.6, 0.4);
   },
 };

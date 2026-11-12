@@ -19,7 +19,7 @@ export interface WeaponBase {
   rec: number;
   sta: number;
   scale: 'str' | 'dex' | 'both';
-  pattern: 'front1' | 'arc3' | 'line2' | 'arc5' | 'ring8';
+  pattern: 'front1' | 'arc3' | 'line2' | 'arc5' | 'ring8' | 'bow';
   poise: number;
   crit: number;
 }
@@ -31,6 +31,7 @@ export const WEAPONS: Record<string, WeaponBase> = {
   axe: { id: 'axe', names: ["Woodsman's Axe", 'Greataxe', "Headsman's Axe"], dmg: [17, 25], rec: 13, sta: 27, scale: 'str', pattern: 'arc5', poise: 1.6, crit: 0.03 },
   mace: { id: 'mace', names: ['Cudgel', 'Morningstar', 'Warhammer'], dmg: [14, 20], rec: 10, sta: 22, scale: 'str', pattern: 'front1', poise: 2.4, crit: 0.04 },
   scythe: { id: 'scythe', names: ['Sickle', 'War Scythe', 'Grave Scythe'], dmg: [8, 12], rec: 11, sta: 24, scale: 'dex', pattern: 'ring8', poise: 0.9, crit: 0.05 },
+  bow: { id: 'bow', names: ['Hunting Bow', 'Yew Longbow', 'Black Yew Bow'], dmg: [8, 12], rec: 9, sta: 13, scale: 'dex', pattern: 'bow', poise: 0.5, crit: 0.08 },
 };
 export const FISTS: WeaponBase = { id: 'fists', names: ['Bare Hands'], dmg: [2, 4], rec: 5, sta: 8, scale: 'str', pattern: 'front1', poise: 0.5, crit: 0.02 };
 
@@ -40,7 +41,9 @@ export const PATTERN_DESC: Record<string, string> = {
   line2: 'reach of 2',
   arc5: 'wide sweep',
   ring8: 'hits all around',
+  bow: 'ranged',
 };
+export const ONE_HANDED = new Set(['sword', 'dagger', 'mace', 'spear']);
 
 const ARMOR_BASES: Record<string, { names: string[]; armor: [number, number] }> = {
   helm: { names: ['Leather Hood', 'Iron Helm', 'Grave Warden Helm'], armor: [4, 8] },
@@ -324,6 +327,10 @@ export function computeStats(p: Player, lament: number): Stats {
   if (s.uniques.has('crown')) s.maxHp = Math.round(s.maxHp * 0.85);
   s.dmgPct += lament * 5;
   s.flaskPct += (p.salts ?? 0) * 12;
+  if (p.talents?.includes('iron')) {
+    s.maxHp = Math.round(s.maxHp * 1.12);
+    s.armor += 10;
+  }
   return s;
 }
 
@@ -365,7 +372,7 @@ export function itemLines(it: Item): [string, number][] {
 
 export function itemGlyph(it: Item): string {
   switch (it.slot) {
-    case 'weapon': return '/';
+    case 'weapon': return it.base === 'bow' ? ')' : '/';
     case 'helm': return '∩';
     case 'chest': return '[';
     case 'ring': return '=';

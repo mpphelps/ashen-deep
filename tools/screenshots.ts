@@ -240,3 +240,16 @@ function explore(g: Game, steps: number, every = 3): void {
   g.mode = 'map';
   snap(g, '7-map');
 }
+
+// ------------------------------------------------------------------ 8. talents
+{
+  const g = game(12);
+  g.player.level = 9;
+  g.player.talents = ['gravebolt', 'leech', 'raise', 'corpse', 'shield', 'iron'];
+  g.player.slots = ['gravebolt', 'raise', 'shield'];
+  g.player.talentPoints = 3;
+  g.mode = 'talents';
+  g.talentCol = 0;
+  g.talentRow = 5;
+  snap(g, '8-talents');
+}

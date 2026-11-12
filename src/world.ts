@@ -356,10 +356,10 @@ export function buildWorld(seed: number, st: WorldState): Floor {
   // ---------------------------------------------------------------- regions, enemies
   f.regions = [
     { name: 'Hollowmere', x: TX0, y: TY0, w: TX1 - TX0 + 1, h: TY1 - TY0 + 1, tier: 0, music: 'town' },
-    { name: 'The Cemetery', x: CX0, y: CY0, w: CX1 - CX0 + 1, h: CY1 - CY0 + 1, tier: 1, music: 'wilds' },
-    { name: 'The Tithe Pit', x: PIT.x - 13, y: PIT.y - 11, w: 27, h: 24, tier: 1, music: 'wilds' },
-    { name: 'The Rotwood', x: 0, y: 0, w: 34, h: H, tier: 3, music: 'wilds' },
-    { name: 'The Chapel Heights', x: 99, y: 0, w: W - 99, h: H, tier: 5, music: 'wilds' },
+    { name: 'The Cemetery', x: CX0, y: CY0, w: CX1 - CX0 + 1, h: CY1 - CY0 + 1, tier: 1, music: 'cemetery' },
+    { name: 'The Tithe Pit', x: PIT.x - 13, y: PIT.y - 11, w: 27, h: 24, tier: 1, music: 'pit' },
+    { name: 'The Rotwood', x: 0, y: 0, w: 34, h: H, tier: 3, music: 'forest' },
+    { name: 'The Chapel Heights', x: 99, y: 0, w: W - 99, h: H, tier: 5, music: 'heights' },
     { name: 'The Pale', x: 0, y: 0, w: W, h: H, tier: 1, music: 'wilds' },
   ];
   const spawnRng = new RNG(hash2(seed, 0xe11e));

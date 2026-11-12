@@ -6,6 +6,8 @@ import { ENEMIES, BOSSES, ELITE_MOD_NAMES, BIOMES } from './data.ts';
 import { RARITY_COLORS, itemLines, itemGlyph, weaponBase, PATTERN_DESC, INV_MAX, salvageValue } from './loot.ts';
 import { G } from './world.ts';
 import { TOOL_INFO, NPCS, ENDING_INTRO, ENDINGS } from './story.ts';
+import { PATHS, TALENT_BY_ID, canLearn, pathPoints, respecCost } from './talents.ts';
+import { talentList, SKILL_KEYS } from './skills.ts';
 import { hash2 } from './rng.ts';
 
 const BG = 0x070606;
@@ -55,6 +57,7 @@ export function render(g: Game, s: Screen): void {
     case 'dialog': drawDialog(g, s); break;
     case 'shop': drawShop(g, s); break;
     case 'journal': drawJournal(g, s); break;
+    case 'talents': drawTalents(g, s); break;
   }
 }
 
@@ -237,6 +240,9 @@ function drawWorld(g: Game, s: Screen, VW: number, VH: number): void {
         ch = '@';
         fg = playerColor(g);
         if (p.act?.kind === 'parry' && p.act.t > 8) bg = 0x103040;
+        else if (p.guard) bg = 0x3a2a10;
+        else if (p.buffs.bone > 0) bg = 0x1a2a1a;
+        else if (p.buffs.warcry > 0) bg = 0x3a1008;
       }
       s.put(sx, sy, ch, fg, bg);
     }
@@ -274,6 +280,10 @@ function drawWorld(g: Game, s: Screen, VW: number, VH: number): void {
   }
   for (const e of g.enemies) {
     if (e.alertT > 0 && g.vis[e.y * W + e.x] > 0) s.put(e.x - camX, e.y - camY - 1, '!', 0xff4040);
+  }
+  if (g.player.guard && g.mode !== 'dead') {
+    const fx = p.x + p.face.x - camX, fy = p.y + p.face.y - camY;
+    if (!g.isOpaque(p.x + p.face.x, p.y + p.face.y)) s.put(fx, fy, p.face.x ? '|' : '─', 0xd0a868);
   }
 }
 
@@ -359,6 +369,7 @@ function objLook(o: Obj, g: Game): [string, number, boolean, number?] {
 
 /** [glyph, fg, bg?] */
 function enemyLook(e: Enemy, g: Game): [string, number, number?] {
+  if (e.ally) return ['z', e.flash > 0 ? 0xffffff : e.birthCd < 100 && (g.tick >> 2) % 2 ? 0x4a7a50 : 0x90e0a0, 0x0c1a0e];
   const d = ENEMIES[e.def];
   let col = d.color;
   let bg: number | undefined;
@@ -424,6 +435,7 @@ function drawSidebar(g: Game, s: Screen, x0: number): void {
   s.text(x, y, 'HP ', 0xe06050);
   bar(s, x + 4, y, 14, p.hp / st.maxHp, 0xc03028, 0x3a1410);
   s.text(x + 19, y++, `${Math.max(0, Math.ceil(p.hp))}/${st.maxHp}`, TEXT);
+  if (p.buffs.bone > 0) s.text(x + 4, y - 1, `+${p.buffs.bone}`.padEnd(5).slice(0, 5), 0xc0f0c0, 0x1a2a1a);
   s.text(x, y, 'ST ', 0x70c060);
   bar(s, x + 4, y, 14, p.sta / st.maxSta, p.staDelay > 0 && p.sta < 5 ? 0x707040 : 0x50a040, 0x14260f);
   s.text(x + 19, y++, `${Math.max(0, Math.floor(p.sta))}`, TEXT);
@@ -433,24 +445,25 @@ function drawSidebar(g: Game, s: Screen, x0: number): void {
   s.text(x, y, 'ASHES ', 0xb0a8ff);
   s.text(x + 6, y, String(p.ashes), 0xe0dcff);
   const cost = levelCost(p.level);
-  s.text(x + 15, y++, `LV ${p.level}`, p.ashes >= cost ? 0xffd060 : TEXT);
-  // tools
+  s.text(x + 15, y, `LV ${p.level}`, p.ashes >= cost ? 0xffd060 : TEXT);
+  if (p.talentPoints > 0) s.text(x + 21, y, `+${p.talentPoints}T`, (g.tick >> 4) % 2 ? 0xffe080 : 0xb09050);
+  y++;
   s.text(x, y, 'TOOLS', DIM);
   TOOLS.forEach((t, i) => {
-    const has = p.tools.includes(t);
-    const sel = p.tool === i && has;
+    const hasT = p.tools.includes(t);
+    const sel = p.tool === i && hasT;
     const info = TOOL_INFO[t];
     s.text(x + 6 + i * 4, y, `${i + 1}`, sel ? 0xffffff : 0x4a4438, sel ? 0x3a2a18 : undefined);
-    s.put(x + 7 + i * 4, y, has ? info.glyph : '·', has ? info.color : 0x3a362e, sel ? 0x3a2a18 : undefined);
+    s.put(x + 7 + i * 4, y, hasT ? info.glyph : '·', hasT ? info.color : 0x3a362e, sel ? 0x3a2a18 : undefined);
   });
   y++;
-  const keyed = p.keys > 0 ? `⌐ Crypt Key${p.keys > 1 ? ` x${p.keys}` : ''}` : '';
   const status: [string, number][] = [];
-  if (keyed) status.push([keyed, 0xffd040]);
+  if (p.keys > 0) status.push([`⌐ Key${p.keys > 1 ? ` x${p.keys}` : ''}`, 0xffd040]);
   if (p.poison > 0) status.push(['Poisoned', 0x90e040]);
   if (p.burn > 0) status.push(['Burning', 0xff7020]);
   if (g.resonance > 0) status.push([`Bell ${Math.ceil(g.resonance / 20)}s`, 0xc8c8ff]);
-  if (g.lament > 0) status.push([`+${g.lament * 5}%`, 0xff9a40]);
+  if (p.buffs.warcry > 0) status.push(['Warcry', 0xff9060]);
+  if (p.guard) status.push(['Guard', 0xd0a868]);
   let sx = x;
   for (const [t, c] of status) {
     if (sx + t.length > x0 + SW - 1) break;
@@ -458,15 +471,30 @@ function drawSidebar(g: Game, s: Screen, x0: number): void {
   }
   y++;
   hline(s, x0 + 1, y++, SW - 1);
-  // objective
-  s.text(x, y++, 'OBJECTIVE', DIM);
-  const obj = wrap(g.objective(), W).slice(0, 4);
-  for (let k = 0; k < 4; k++) s.text(x, y++, obj[k] ?? '', 0xd8c8a0);
+  const obj = wrap(g.objective(), W).slice(0, 3);
+  for (let k = 0; k < 3; k++) s.text(x, y++, obj[k] ?? '', k === 0 ? 0xd8c8a0 : 0xb0a488);
   hline(s, x0 + 1, y++, SW - 1);
   const w = p.eq.weapon;
   const b = weaponBase(w);
   s.text(x, y++, (w ? w.name : 'Bare Hands').slice(0, W), w ? RARITY_COLORS[w.rarity] : TEXT);
   s.text(x, y++, `${w ? w.dmgMin : b.dmg[0]}-${w ? w.dmgMax : b.dmg[1]} · ${PATTERN_DESC[b.pattern]} · AR ${st.armor}`.slice(0, W), 0xa8a090);
+  hline(s, x0 + 1, y++, SW - 1);
+  // skills
+  for (let k = 0; k < 3; k++) {
+    const id = p.slots[k];
+    s.text(x, y, SKILL_KEYS[k], id ? ACCENT : 0x3a362e);
+    if (id) {
+      const t = TALENT_BY_ID[id];
+      const col = PATHS.find((q) => q.id === t.path)!.color;
+      const cd = p.cds[id] ?? 0;
+      const ready = cd <= 0;
+      s.text(x + 2, y, t.name.slice(0, 15), ready ? col : scale(col, 0.45));
+      if (t.kind === 'toggle') s.text(x + 18, y, p.guard ? 'UP' : 'down', p.guard ? 0xffe080 : DIM);
+      else if (!ready) s.text(x + 18, y, `${Math.ceil(cd / 20)}s`.padStart(4), DIM);
+      else if (t.hp) s.text(x + 18, y, `-${Math.round(t.hp * 100)}%hp`, 0x904040);
+    } else s.text(x + 2, y, '—', 0x3a362e);
+    y++;
+  }
   hline(s, x0 + 1, y++, SW - 1);
   const tg = g.target && !g.target.dead ? g.target : null;
   if (tg) {
@@ -474,8 +502,10 @@ function drawSidebar(g: Game, s: Screen, x0: number): void {
     bar(s, x, y++, SW - 4, tg.hp / tg.maxHp, 0xb02020, 0x301010);
     let info = '';
     if (tg.elite) info = tg.elite.mods.map((m) => ELITE_MOD_NAMES[m]).join(', ');
+    if (tg.venom > 0) info = 'Poisoned';
     if (tg.state === 'stagger') info = 'STAGGERED';
     if (tg.riposte > 0) info = 'OPEN TO RIPOSTE';
+    if (tg.state === 'idle' && !tg.aware) info = 'UNAWARE';
     if (tg.state === 'windup') info = 'WINDING UP!';
     s.text(x, y++, info.slice(0, W), tg.state === 'windup' ? 0xff4040 : 0xffd060);
   } else {
@@ -484,11 +514,11 @@ function drawSidebar(g: Game, s: Screen, x0: number): void {
   }
   hline(s, x0 + 1, y++, SW - 1);
   const near = g.nearbyDescription();
-  for (let k = 0; k < 3; k++) s.text(x, y++, (near[k] ?? '').slice(0, W), 0xd0c8a8);
+  for (let k = 0; k < 2; k++) s.text(x, y++, (near[k] ?? '').slice(0, W), 0xd0c8a8);
   hline(s, x0 + 1, y++, SW - 1);
   const ctl: [string, string][] = [
     ['WASD', 'move'], ['J', 'atk'], ['K', 'heavy'], ['SPC', 'roll'], ['Q', 'parry'], ['F', 'flask'], ['E', 'use'],
-    ['R', 'tool'], ['1-4', 'pick'], ['I', 'pack'], ['B', 'journal'], ['M', 'map'], ['N', 'snd'], ['?', 'help'],
+    ['R', 'tool'], ['T', 'talents'], ['I', 'pack'], ['B', 'journal'], ['M', 'map'], ['?', 'help'],
   ];
   let cx = x;
   for (const [k, v] of ctl) {
@@ -640,7 +670,7 @@ function compareHint(it: { slot: Slot; dmgMin: number; dmgMax: number; armor: nu
 
 function drawBonfire(g: Game, s: Screen): void {
   const p = g.player, st = g.stats;
-  const w = 60, h = 21;
+  const w = 62, h = 25;
   const x = (s.w - SW - w) >> 1, y = Math.max(0, (s.h - LH - h) >> 1);
   box(s, x, y, w, h, 'BONFIRE', 0x8a5020);
   const fl = hash2(1, g.tick >> 1) % 3;
@@ -652,7 +682,9 @@ function drawBonfire(g: Game, s: Screen): void {
     ['Vigor', `${p.vig}`, `Max HP ${st.maxHp}`],
     ['Endurance', `${p.end}`, `Max stamina ${st.maxSta}`],
     ['Strength', `${p.str}`, 'Axes, maces, swords'],
-    ['Dexterity', `${p.dex}`, 'Daggers, spears, scythes, crit'],
+    ['Dexterity', `${p.dex}`, 'Daggers, spears, bows, scythes, crit'],
+    ['Talents', p.talentPoints ? `+${p.talentPoints}` : '', 'Remember who you were'],
+    ['Forget talents', '', `Unlearn everything for ${respecCost(p.level)} ashes`],
     ['Travel', '', 'Step into another flame you have rested at'],
     ['Leave', '', 'Return to the dark'],
   ];
@@ -660,9 +692,9 @@ function drawBonfire(g: Game, s: Screen): void {
     const sel = k === g.bonSel;
     const yy = y + 6 + k * 2;
     s.text(x + 3, yy, sel ? '▶' : ' ', 0xffd060);
-    s.text(x + 5, yy, o[0].padEnd(11), sel ? 0xffffff : TEXT, sel ? 0x2a1a10 : undefined);
-    s.text(x + 17, yy, o[1].padStart(3), 0xffd080);
-    s.text(x + 22, yy, o[2], DIM);
+    s.text(x + 5, yy, o[0].padEnd(15), sel ? 0xffffff : TEXT, sel ? 0x2a1a10 : undefined);
+    s.text(x + 20, yy, o[1].padStart(3), 0xffd080);
+    s.text(x + 25, yy, o[2].slice(0, w - 27), DIM);
   });
   s.text(x + 3, y + h - 2, '[↑↓] choose  [E/Enter] select  [Esc] leave', ACCENT);
 }
@@ -824,7 +856,8 @@ function drawHelp(s: Screen): void {
     ['FLASK       F               heal ~45%. Refills at bonfires.', TEXT],
     ['USE / TALK  E               bonfires, chests, inscriptions, people', TEXT],
     ['TOOL        R  (1-4 pick)   spade, lantern, chain hook, bell', TEXT],
-    ['PACK  I   JOURNAL  B   MAP  M   SOUND  N', TEXT],
+    ['SKILLS      U  O  P         active talents (bind them in the talent screen)', TEXT],
+    ['TALENTS T   PACK I   JOURNAL B   MAP M   SOUND N', TEXT],
     ['', TEXT],
     ['• Red tiles are incoming attacks. Get out, roll through, or parry.', 0xff7060],
     ['• Unaware enemies (dim) take 2.5x BACKSTAB damage. Approach from the dark.', 0xd0c8a8],
@@ -833,6 +866,7 @@ function drawHelp(s: Screen): void {
     ['• Talk to everyone in Hollowmere. They hate you. They know why.', 0xc8b0d8],
     ['• Dying drops your ashes as a bloodstain (§). Reach it to reclaim.', 0xff6060],
     ['• Resting heals and lets you travel between flames. The dead rise again.', 0xffa040],
+    ['• Each level gives a talent point. Four paths; you will not master them all.', 0x9ad0a0],
   ];
   const w = 80, h = lines.length + 4;
   const x = Math.max(0, (s.w - w) >> 1), y = Math.max(0, (s.h - h) >> 1);
@@ -937,4 +971,58 @@ function drawTitle(g: Game, s: Screen): void {
   });
   const foot = '↑↓ choose · Enter select · best in a 120x34+ terminal';
   s.text((s.w - foot.length) >> 1, s.h - 2, foot, 0x4a4238);
+}
+
+// ================================================================== talents
+function drawTalents(g: Game, s: Screen): void {
+  const p = g.player;
+  const w = Math.min(s.w - 2, 118), h = s.h - 2;
+  const x = (s.w - w) >> 1, y = 1;
+  box(s, x, y, w, h, 'WHAT THE PIT LET YOU REMEMBER', 0x8a7a5a);
+  s.text(x + w - 24, y, ` Talent points: ${p.talentPoints} `, p.talentPoints ? 0xffe080 : DIM);
+  const cols = talentList();
+  const cw = Math.floor((w - 4) / 4);
+  cols.forEach((col, ci) => {
+    const path = PATHS[ci];
+    const cx = x + 2 + ci * cw;
+    const spent = pathPoints(p.talents, path.id);
+    s.text(cx, y + 2, path.name.slice(0, cw - 1), ci === g.talentCol ? path.color : scale(path.color, 0.6));
+    s.text(cx, y + 3, `${spent} point${spent === 1 ? '' : 's'} spent`, DIM);
+    col.forEach((t, ri) => {
+      const yy = y + 5 + ri * 2 + (t.tier - 1);
+      const owned = p.talents.includes(t.id);
+      const why = canLearn(p.talents, p.talentPoints, t);
+      const sel = ci === g.talentCol && ri === g.talentRow;
+      const col2 = owned ? path.color : why && why.startsWith('Needs 2') || why?.startsWith('Needs 4') ? 0x3a362e : 0x8a8478;
+      const mark = owned ? '■' : why ? '□' : '◊';
+      s.text(cx, yy, `${mark} ${t.name}`.slice(0, cw - 2), sel ? 0xffffff : col2, sel ? 0x2a2018 : undefined);
+      const tag = t.kind === 'passive' ? 'passive' : t.kind === 'toggle' ? 'toggle' : 'active';
+      s.text(cx + 2, yy + 1, `${tag}${t.cost > 1 ? ' · 2 pts' : ''}${owned && p.slots.includes(t.id) ? ` · [${SKILL_KEYS[p.slots.indexOf(t.id)]}]` : ''}`.slice(0, cw - 3), owned ? scale(path.color, 0.6) : 0x4a4438);
+    });
+    if (ci > 0) for (let j = y + 2; j < y + 22; j++) s.put(cx - 2, j, '│', 0x2a241c);
+  });
+  // tier markers
+  s.text(x + w - 9, y + 5, 'TIER I', 0x4a4438);
+  s.text(x + w - 10, y + 10, 'TIER II', 0x4a4438);
+  s.text(x + w - 11, y + 15, 'TIER III', 0x4a4438);
+  // detail pane
+  const t = cols[g.talentCol][g.talentRow];
+  const path = PATHS[g.talentCol];
+  const dy0 = y + 23;
+  hline(s, x + 1, dy0 - 1, w - 2);
+  s.text(x + 3, dy0, t.name, path.color);
+  const costs: string[] = [];
+  if (t.sta) costs.push(`${t.sta} stamina`);
+  if (t.hp) costs.push(`${Math.round(t.hp * 100)}% of your health`);
+  if (t.cd) costs.push(`${(t.cd / 20).toFixed(t.cd % 20 ? 1 : 0)}s cooldown`);
+  s.text(x + 5 + t.name.length, dy0, costs.join(' · '), DIM);
+  let dy = dy0 + 1;
+  for (const ln of wrap(t.desc, w - 8)) s.text(x + 3, dy++, ln, 0xd8d0c0);
+  for (const ln of wrap(t.flavor, w - 8)) s.text(x + 3, dy++, ln, 0x8a7a6a);
+  if (dy < y + h - 3) for (const ln of wrap(path.blurb, w - 8).slice(0, Math.max(0, y + h - 3 - dy))) s.text(x + 3, dy++, ln, scale(path.color, 0.55));
+  const why = canLearn(p.talents, p.talentPoints, t);
+  const foot = p.talents.includes(t.id)
+    ? t.kind === 'passive' ? 'Learned.' : '[1] [2] [3] bind to U / O / P'
+    : why ?? '[E/Enter] learn';
+  s.text(x + 3, y + h - 2, `[←→↑↓] browse   ${foot}   [T/Esc] close`, ACCENT);
 }

@@ -238,6 +238,9 @@ export interface Enemy {
   ashes: number;
   tier: number;
   flag: string | null;
+  ally: boolean; // a raised thrall
+  venom: number;
+  blind: number; // ticks it cannot notice you
 }
 
 export interface Tele {
@@ -264,6 +267,12 @@ export interface Projectile {
   glyph: string;
   color: number;
   life: number;
+  friendly?: boolean; // fired by the player: hits enemies, not you
+  pierce?: number;
+  hits?: number[];
+  sx?: number;
+  sy?: number;
+  onHit?: (e: Enemy) => void;
 }
 
 export interface Field {
@@ -282,9 +291,10 @@ export interface Fx {
 }
 
 export interface PAction {
-  kind: 'attack' | 'heavy' | 'roll' | 'parry' | 'drink' | 'recover';
+  kind: 'attack' | 'heavy' | 'roll' | 'parry' | 'drink' | 'recover' | 'skill';
   t: number;
   dir: Vec;
+  skill?: string;
 }
 
 export interface Player {
@@ -315,4 +325,10 @@ export interface Player {
   tool: number; // index into TOOLS of the selected tool
   salts: number; // embalming salts bought from Pell (+flask healing)
   lastSafe: Vec;
+  talents: string[];
+  talentPoints: number;
+  slots: (string | null)[]; // three active-skill slots (U, O, P)
+  cds: Record<string, number>; // cooldowns in ticks
+  guard: boolean; // shield raised
+  buffs: { warcry: number; bone: number; boneT: number; aim: number };
 }

@@ -5,6 +5,14 @@ import { Screen } from '../src/term.ts';
 import { render } from '../src/render.ts';
 import { NPCS, QUESTS } from '../src/story.ts';
 import { PIT } from '../src/world.ts';
+import { talentList, respec, useSkill } from '../src/skills.ts';
+
+/** Cast immediately, as if the key were pressed with nothing else going on. */
+function useSkillNow(g: Game, slot: number): void {
+  g.player.act = null;
+  g.player.sta = 200;
+  useSkill(g, slot);
+}
 
 let failures = 0;
 const ok = (cond: boolean, msg: string) => {
@@ -378,12 +386,145 @@ function grabStory(): void {
   ok(h.player.ashes === 321, 'walking onto your bloodstain gets it back');
 }
 
+// ---------------------------------------------------------------- talents
+{
+  const learn = (h: Game, id: string): boolean => {
+    const cols = talentList();
+    h.mode = 'talents';
+    h.talentCol = cols.findIndex((c) => c.some((t) => t.id === id));
+    h.talentRow = cols[h.talentCol].findIndex((t) => t.id === id);
+    h.input('enter', '');
+    h.mode = 'play';
+    return h.player.talents.includes(id);
+  };
+  const arena = (h: Game, def = 'hollow', dist = 1): Enemy => {
+    const e = duel(h, def);
+    e.x = h.player.x + dist;
+    if (e.x !== h.player.x + 1) for (let k = 1; k <= dist; k++) h.floor.objects = h.floor.objects.filter((o) => !(o.x === h.player.x + k && o.y === h.player.y));
+    h.player.face = { x: 1, y: 0 };
+    return e;
+  };
+
+  const h = fresh(21);
+  ok(h.player.talentPoints === 1, 'you start with one talent point and no talents');
+  h.player.talentPoints = 20;
+  ok(!learn(h, 'raise'), 'tier II is locked until two points are spent in its path');
+  ok(learn(h, 'gravebolt') && learn(h, 'leech') && learn(h, 'raise'), 'spending two points in a path opens tier II');
+  ok(h.player.slots[0] === 'gravebolt' && h.player.slots[1] === 'raise', 'learned actives bind themselves to U / O');
+
+  // grave bolt: costs blood, hits at range, goes on cooldown
+  let e = arena(h, 'hollow', 4);
+  e.state = 'recover';
+  e.t = 999;
+  const hp0 = h.player.hp, ehp = e.hp;
+  h.input('skill1', '');
+  tick(h, 12);
+  ok(h.player.hp < hp0 && e.hp < ehp && (h.player.cds.gravebolt ?? 0) > 0, `Grave Bolt costs blood (${hp0 - h.player.hp}), hits at range (${ehp - e.hp}), then cools down`);
+
+  // raise the dead from a corpse; the thrall fights for you
+  const f = h.floor;
+  f.decal[(h.player.y - 1) * f.w + h.player.x] = 2;
+  h.updateFov();
+  h.player.cds = {};
+  useSkillNow(h, 1);
+  const thrall = h.enemies.find((x) => x.ally);
+  ok(!!thrall, 'Raise the Dead turns a corpse into a thrall');
+  const before = e.hp;
+  for (let i = 0; i < 300 && !e.dead && e.hp === before; i++) {
+    e.state = 'recover';
+    e.t = 999;
+    h.player.hp = h.stats.maxHp;
+    h.update();
+  }
+  ok(e.hp < before || e.dead, 'the thrall attacks your enemies');
+  ok(!h.enemies.some((x) => x.ally && x === h.target), 'you never target your own thrall');
+
+  // ranger: an old bow, volleys
+  const r = fresh(22);
+  r.player.talentPoints = 20;
+  learn(r, 'volley');
+  const bow = r.player.inv.find((i) => i.base === 'bow');
+  ok(!!bow, 'learning a Ranger talent hands you your old bow');
+  e = arena(r, 'hollow', 3);
+  e.state = 'recover';
+  e.t = 999;
+  useSkillNow(r, 0);
+  ok(r.projs.length === 0, 'Volley needs a bow in your hands');
+  r.player.eq.weapon = bow!;
+  r.recalc();
+  r.player.cds = {};
+  useSkillNow(r, 0);
+  ok(r.projs.filter((pr) => pr.friendly).length === 3, 'Volley looses three arrows');
+  const eh = e.hp;
+  tick(r, 15);
+  ok(e.hp < eh, 'arrows hit at range');
+  r.player.act = null;
+  r.player.cds = {};
+  const e2hp = e.hp;
+  r.input('attack', '');
+  tick(r, 15);
+  ok(e.hp < e2hp || e.dead, 'a bow\'s basic attack shoots too');
+
+  // cutpurse: smoke makes enemies lose you; the next hit is a backstab
+  const c = fresh(23);
+  c.player.talentPoints = 20;
+  learn(c, 'shadow');
+  learn(c, 'smoke');
+  e = arena(c, 'knight', 1);
+  ok(e.aware, 'the knight knows you are there');
+  useSkillNow(c, 0);
+  ok(e.state === 'idle' && !e.aware, 'Smoke Vial makes nearby enemies lose you');
+  c.player.act = null;
+  const kh = e.hp;
+  c.input('attack', '');
+  tick(c, 4);
+  ok(c.msgs.some((m) => m.text.startsWith('BACKSTAB')) && kh - e.hp > 30, `...and the next blow is a backstab (${kh - e.hp})`);
+  learn(c, 'twin');
+  learn(c, 'step');
+  ok(learn(c, 'venom'), 'four points in a path open tier III');
+  ok(learn(c, 'cull'), 'the capstone costs two points');
+  e.hp = e.maxHp * 0.15;
+  c.player.act = null;
+  c.input('attack', '');
+  tick(c, 4);
+  ok(e.dead, 'Cull finishes a weakened enemy outright');
+
+  // disgraced: the shield takes most of a frontal blow, in stamina
+  const d = fresh(24);
+  d.player.talentPoints = 20;
+  learn(d, 'shield');
+  learn(d, 'iron');
+  ok(d.stats.armor >= 10, 'Old Wounds adds armor');
+  e = arena(d, 'hollow', 1);
+  useSkillNow(d, 0);
+  ok(d.player.guard, 'Raise Shield lifts your guard');
+  const hpA = d.player.hp, staA = d.player.sta;
+  d.hurtPlayer(40, { owner: e, parryable: true });
+  ok(hpA - d.player.hp <= 12 && d.player.sta < staA, `a frontal blow mostly lands on the shield (${hpA - d.player.hp} HP, ${Math.round(staA - d.player.sta)} stamina)`);
+  const hpB = d.player.hp;
+  d.hurtPlayer(40, { from: { x: d.player.x - 3, y: d.player.y } });
+  ok(hpB - d.player.hp > 20, 'blows from behind ignore the shield');
+  learn(d, 'bash');
+  d.player.guard = false;
+  d.player.act = null;
+  d.player.cds = {};
+  e.state = 'chase';
+  useSkillNow(d, 1);
+  ok((e.state as string) === 'stagger', 'Shield Bash staggers');
+
+  // respec
+  const pts = d.player.talentPoints, spent = d.player.talents.length;
+  d.player.ashes = 99999;
+  respec(d);
+  ok(d.player.talents.length === 0 && d.player.talentPoints === pts + spent, 'forgetting at a bonfire returns every point, for ashes');
+}
+
 // ---------------------------------------------------------------- render every screen once
 {
   const h = fresh(8);
   const s = new Screen();
   s.resize(120, 34);
-  for (const m of ['play', 'inv', 'bonfire', 'travel', 'map', 'help', 'journal', 'confirmQuit'] as const) {
+  for (const m of ['play', 'inv', 'bonfire', 'travel', 'map', 'help', 'journal', 'confirmQuit', 'talents'] as const) {
     h.mode = m;
     render(h, s);
   }

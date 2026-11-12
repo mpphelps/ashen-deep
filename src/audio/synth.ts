@@ -240,3 +240,41 @@ export function toWav(b: Float32Array): Buffer {
   h.writeUInt32LE(data.length, 40);
   return Buffer.concat([h, data]);
 }
+
+/**
+ * Make a loop sound like a decaying recording: tape wow & flutter (whole cycles per loop, so it stays
+ * seamless), hiss, crackle, and a dulled top end.
+ */
+export function decrepit(b: Float32Array, amount = 1): Float32Array {
+  const L = b.length;
+  const secs = L / SR;
+  const wowF = Math.max(1, Math.round(0.3 * secs)) / secs;
+  const flutF = Math.max(1, Math.round(6.3 * secs)) / secs;
+  const aw = (0.0045 * amount * SR) / (2 * Math.PI * wowF);
+  const af = (0.0009 * amount * SR) / (2 * Math.PI * flutF);
+  const out = new Float32Array(L);
+  for (let i = 0; i < L; i++) {
+    const t = i / SR;
+    let pos = i + aw * Math.sin(2 * Math.PI * wowF * t) + af * Math.sin(2 * Math.PI * flutF * t);
+    pos = ((pos % L) + L) % L;
+    const i0 = Math.floor(pos), fr = pos - i0;
+    out[i] = b[i0] * (1 - fr) + b[(i0 + 1) % L] * fr;
+  }
+  let h = 0;
+  for (let i = 0; i < L; i++) {
+    h += 0.25 * (rnd() * 2 - 1 - h);
+    out[i] += h * 0.012 * amount;
+    if (rnd() < 0.00035 * amount) {
+      const a = (0.04 + rnd() * 0.1) * (rnd() < 0.5 ? 1 : -1);
+      for (let k = 0; k < 24; k++) out[(i + k) % L] += a * Math.exp(-k / 4);
+    }
+  }
+  const c = 1 - Math.exp((-2 * Math.PI * 4200) / SR);
+  let y = 0;
+  for (let pass = 0; pass < 2; pass++)
+    for (let i = 0; i < L; i++) {
+      y += c * (out[i] - y);
+      if (pass === 1) out[i] = y;
+    }
+  return out;
+}

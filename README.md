@@ -30,6 +30,8 @@ dark, in what the bosses scream as they die.
 | **Themed dungeons.** Each biome has its own rooms: here, the Rotwood's Hanging Grove. Red tiles are incoming attacks. | **Bosses.** The Choir sings rings of death. Find the silence between the notes. |
 | ![Journal](docs/screenshots/6-journal.png) | ![World map](docs/screenshots/7-map.png) |
 | **The journal.** Quests, lore pages and keepsakes. The story lives here. | **The Pale.** The Rotwood, the river, the cemetery, the Pit, the town, the gorge and the chapel heights. |
+| ![Talents](docs/screenshots/8-talents.png) | |
+| **Talents.** Four half-remembered lives. One point per level, capstones cost two; you will master about two paths per playthrough. | |
 
 > The screenshots come from the game's own frame buffer. `npm run screenshots` stages each scene through the game API and renders it with headless Chrome.
 
@@ -53,6 +55,8 @@ npm start
 | `F` | Drink a flask |
 | `E` | Use / talk: bonfires, chests, inscriptions, people |
 | `R` | Use your tool · `1`–`4` choose which |
+| `U` `O` `P` | Use the active talents bound to those slots |
+| `T` | Talents: learn with `E`, bind actives with `1`–`3` |
 | `I` | Pack & equipment (`E` equip, `X` salvage) |
 | `B` | Journal: quests, lore, keepsakes |
 | `M` | Map |
@@ -96,6 +100,18 @@ npm start
 - Most of them despise you. Some warm up after you finish their quests.
 - There are seven quests, two vendors, quest-only legendary rewards, and two endings.
 
+**Talent paths**
+- You start knowing nothing. Each level-up gives 1 talent point. You can mix paths freely, but tier II needs 2 points spent in that path, tier III needs 4, and capstones cost 2.
+- A full playthrough masters about two paths. Forgetting everything at a bonfire costs ashes.
+- Each path pays for its skills differently:
+
+| Path | Fantasy | Pays with | Highlights |
+|---|---|---|---|
+| The Gravecaller | necromancy | your own blood | Grave Bolt, Raise the Dead (thralls from corpses), Corpse Burst, Bone Armor, Harvest |
+| The Dark Ranger | bows | stamina | Volley, Pinning Shot, Disengage, Black Arrow (piercing), Patience (rewards distance) |
+| The Cutpurse | stealth, daggers | stamina | Smoke Vial and Shadow Step set up backstabs, Twin Fangs, Venom, Cull (executes) |
+| The Disgraced | shield and sword | stamina | Raise Shield (block stance), Shield Bash, Drillmaster (parries), Warcry, Last Stand |
+
 **Combat (souls-like)**
 - Every attack is telegraphed: you can step out, roll through it, or parry it and riposte. Stamina limits everything.
 - Sneak up for backstabs. Shielded knights have to be flanked.
@@ -115,7 +131,8 @@ npm start
 - Bonfires heal you, level you up and let you travel, but resting raises the dead again.
 
 **Audio**
-- Eight procedurally synthesized music loops: title, town, wilds, one per dungeon, and boss fights.
+- Twelve procedurally synthesized music loops, so every region, the town and each dungeon has its own: a broken music box in the town square, a funeral organ in the cemetery, a heartbeat in the Pit, a dead choir on the chapel heights.
+- Every track is aged like a dying recording: tape wow and flutter, hiss, crackle and a muffled top end.
 - About 50 sound effects.
 - Playback uses winmm on Windows, `afplay` on macOS, and `paplay` or `aplay` on Linux.
 - `--mute` starts silent and `--no-audio` turns audio off entirely.
@@ -142,6 +159,7 @@ The test suite checks:
 | `src/world.ts` | the overworld map and its gates |
 | `src/dungeon.ts` | dungeon generation, tool gates, themed rooms, puzzles, sokoban solver |
 | `src/game.ts` | simulation at 20 ticks/s: locations, combat, tools, quests, shops, saves |
+| `src/talents.ts` / `src/skills.ts` | talent paths and data / active skills, thralls, talent screen |
 | `src/ai.ts` | enemy behaviours and boss attack patterns |
 | `src/data.ts` | bestiary, bosses, biomes, room themes |
 | `src/loot.ts` | items, affixes, uniques, loot tables, stats |
